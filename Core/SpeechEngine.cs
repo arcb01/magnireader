@@ -407,14 +407,25 @@ public class SpeechEngine : IDisposable
                 }
             }
 
-            _persistentSapiSynth!.SpeakProgress += OnSapiSpeakProgress;
-            _persistentSapiSynth.SpeakCompleted += OnSapiSpeakCompleted;
+            // NOTE: We intentionally do NOT subscribe to SpeakProgress.
+            // NaturalVoiceSAPIAdapter can report negative CharacterPosition values,
+            // which crashes System.Speech internally (String.Substring with negative index).
+            // This crash happens on a ThreadPool thread and is unrecoverable.
+            // Instead, we use timer-based word tracking (same as WinRT path).
+            _persistentSapiSynth!.SpeakCompleted += OnSapiSpeakCompleted;
 
             if (token.IsCancellationRequested) return;
+
+            // Build estimated word timings for timer-based highlighting
+            BuildEstimatedWordTimings(text);
 
             System.Diagnostics.Debug.WriteLine(
                 $"[Speech] SAPI5 SpeakAsync at {sw.ElapsedMilliseconds}ms");
             _persistentSapiSynth.SpeakAsync(text);
+
+            // Start timer-based word tracking
+            _useMediaPlayerForWordTimer = false;
+            StartWordTimer();
 
             // Event-based wait (responds instantly vs Thread.Sleep polling)
             using var doneEvent = new ManualResetEventSlim(false);
@@ -435,19 +446,11 @@ public class SpeechEngine : IDisposable
             if (token.IsCancellationRequested)
                 _persistentSapiSynth.SpeakAsyncCancelAll();
 
-            _persistentSapiSynth.SpeakProgress -= OnSapiSpeakProgress;
             _persistentSapiSynth.SpeakCompleted -= OnSapiSpeakCompleted;
+            StopWordTimer();
         }, token);
     }
 
-    private void OnSapiSpeakProgress(object? sender, SapiSynth.SpeakProgressEventArgs e)
-    {
-        if (_cts?.Token.IsCancellationRequested == true) return;
-        System.Windows.Application.Current?.Dispatcher.BeginInvoke(() =>
-        {
-            WordReached?.Invoke(e.CharacterPosition, e.CharacterCount);
-        });
-    }
 
     private void OnSapiSpeakCompleted(object? sender, SapiSynth.SpeakCompletedEventArgs e)
     {
@@ -531,6 +534,34 @@ public class SpeechEngine : IDisposable
     }
 
     // ─── Word Timing ────────────────────────────────────────────
+
+    /// <summary>
+    /// Builds estimated word timings for SAPI5 path (no stream markers available).
+    /// Assumes ~60ms per character as a rough speech rate estimate.
+    /// </summary>
+    private void BuildEstimatedWordTimings(string text)
+    {
+        _wordTimings.Clear();
+        var totalDuration = TimeSpan.FromSeconds(text.Length * 0.06);
+        int totalChars = text.Length;
+        int pos = 0;
+        int charsSoFar = 0;
+
+        while (pos < text.Length)
+        {
+            while (pos < text.Length && char.IsWhiteSpace(text[pos])) { pos++; charsSoFar++; }
+            if (pos >= text.Length) break;
+
+            int wordStart = pos;
+            while (pos < text.Length && !char.IsWhiteSpace(text[pos])) pos++;
+            int wordLen = pos - wordStart;
+
+            double fraction = (double)charsSoFar / Math.Max(1, totalChars);
+            var offset = TimeSpan.FromTicks((long)(totalDuration.Ticks * fraction));
+            _wordTimings.Add((wordStart, wordLen, offset));
+            charsSoFar = pos;
+        }
+    }
 
     private void ExtractWordTimings(string text, SpeechSynthesisStream result)
     {
