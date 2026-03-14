@@ -1,0 +1,29 @@
+# MagniReader .gitignore
+
+## Build outputs
+bin/
+obj/
+*.user
+*.suo
+*.cache
+
+## Build logs
+build.log
+build_output.txt
+buildlog.txt
+
+## IDE
+.vs/
+.idea/
+*.DotSettings
+
+## Temp / test projects
+tmp_*/
+
+## OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+## Source images (keep only the compiled .ico)
+icon_clean.png

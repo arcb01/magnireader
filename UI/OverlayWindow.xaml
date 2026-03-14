@@ -1,0 +1,48 @@
+<Window x:Class="MagniReader.UI.OverlayWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="MagniReader Overlay"
+        AllowsTransparency="True"
+        WindowStyle="None"
+        Background="Transparent"
+        Topmost="True"
+        ShowInTaskbar="False"
+        WindowState="Normal"
+        ResizeMode="NoResize"
+        Visibility="Collapsed">
+
+    <Canvas x:Name="OverlayCanvas">
+        <!-- Full-screen dim -->
+        <Rectangle x:Name="DimBackground" Fill="#99000000" />
+
+        <!-- Cutout dim rects -->
+        <Rectangle x:Name="DimTop"    Fill="#99000000" />
+        <Rectangle x:Name="DimBottom" Fill="#99000000" />
+        <Rectangle x:Name="DimLeft"   Fill="#99000000" />
+        <Rectangle x:Name="DimRight"  Fill="#99000000" />
+
+        <!-- Reading progress fill (grows from left to right inside the element) -->
+        <Rectangle x:Name="ReadingFill" Opacity="0.15" RadiusX="4" RadiusY="4" />
+
+        <!-- Highlight border around the text element -->
+        <Border x:Name="HighlightBorder"
+                BorderThickness="2"
+                CornerRadius="4"
+                Visibility="Collapsed">
+            <Border.BorderBrush>
+                <SolidColorBrush x:Name="HighlightBrush" Color="#FFD700" />
+            </Border.BorderBrush>
+            <Border.Effect>
+                <DropShadowEffect Color="#FFD700" BlurRadius="12" ShadowDepth="0" Opacity="0.5" />
+            </Border.Effect>
+            <Border Background="Transparent" />
+        </Border>
+
+        <!-- Scanning line (thin vertical line that sweeps across the text) -->
+        <Rectangle x:Name="ScanLine"
+                   Width="2"
+                   Visibility="Collapsed"
+                   Opacity="0.8" />
+
+    </Canvas>
+</Window>

@@ -1,0 +1,50 @@
+<Window x:Class="MagniReader.UI.SnipWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="MagniReader Snip"
+        AllowsTransparency="True"
+        WindowStyle="None"
+        Background="Transparent"
+        Topmost="True"
+        ShowInTaskbar="False"
+        ResizeMode="NoResize"
+        Cursor="Cross">
+
+    <Canvas x:Name="SnipCanvas">
+        <!-- Semi-transparent overlay -->
+        <Rectangle x:Name="FullDim" Fill="#55000000" />
+
+        <!-- Selection rectangle -->
+        <Rectangle x:Name="SelectionRect"
+                   Stroke="#FFD700"
+                   StrokeThickness="2"
+                   Fill="Transparent"
+                   StrokeDashArray="4,2"
+                   Visibility="Collapsed" />
+
+        <!-- Instruction text -->
+        <Border x:Name="InstructionBanner"
+                Background="#E0181825"
+                CornerRadius="8"
+                Padding="16,8">
+            <TextBlock x:Name="InstructionText"
+                       FontFamily="Segoe UI"
+                       FontSize="15"
+                       FontWeight="SemiBold"
+                       Foreground="#FFD700"
+                       Text="🔍 Drag to select an area to analyze — Esc to cancel" />
+        </Border>
+
+        <!-- Size indicator -->
+        <Border x:Name="SizeBadge"
+                Background="#CC181825"
+                CornerRadius="4"
+                Padding="6,2"
+                Visibility="Collapsed">
+            <TextBlock x:Name="SizeText"
+                       FontFamily="Segoe UI"
+                       FontSize="11"
+                       Foreground="#CCCCCC" />
+        </Border>
+    </Canvas>
+</Window>

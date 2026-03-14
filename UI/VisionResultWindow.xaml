@@ -1,0 +1,90 @@
+<Window x:Class="MagniReader.UI.VisionResultWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="MagniReader — Vision Analysis"
+        Width="520" Height="420"
+        MinWidth="400" MinHeight="300"
+        WindowStartupLocation="CenterScreen"
+        Topmost="True"
+        Background="#1A1B2E"
+        ResizeMode="CanResizeWithGrip">
+
+    <Window.Resources>
+        <Style x:Key="CloseBtn" TargetType="Button">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="#888" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="FontSize" Value="16" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Padding" Value="8,4" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}"
+                                CornerRadius="4" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Background" Value="#33FFFFFF" />
+                                <Setter Property="Foreground" Value="#FFD700" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <Border Grid.Row="0" Background="#222340" Padding="16,10">
+            <DockPanel>
+                <Button DockPanel.Dock="Right" Content="✕" Style="{StaticResource CloseBtn}"
+                        Click="OnClose" VerticalAlignment="Top" />
+                <StackPanel>
+                    <TextBlock Text="🔍 Vision Analysis"
+                               FontFamily="Segoe UI" FontSize="16" FontWeight="Bold"
+                               Foreground="#FFD700" />
+                    <TextBlock x:Name="StatusText"
+                               FontFamily="Segoe UI" FontSize="11"
+                               Foreground="#8888AA" Margin="0,2,0,0"
+                               Text="Analyzing..." />
+                </StackPanel>
+            </DockPanel>
+        </Border>
+
+        <!-- Content -->
+        <Border Grid.Row="1" Margin="12" Padding="12"
+                Background="#0F1020" CornerRadius="8">
+            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                <TextBlock x:Name="ResultText"
+                           FontFamily="Segoe UI" FontSize="14"
+                           Foreground="#E0E0F0"
+                           TextWrapping="Wrap"
+                           LineHeight="22"
+                           Text="Analyzing the selected area..." />
+            </ScrollViewer>
+        </Border>
+
+        <!-- Footer buttons -->
+        <StackPanel Grid.Row="2" Orientation="Horizontal"
+                    HorizontalAlignment="Right" Margin="12,0,12,12">
+            <Button x:Name="MoreDetailsBtn" Content="🔎 More Details"
+                    Style="{StaticResource CloseBtn}" Margin="0,0,8,0"
+                    Foreground="#89B4FA" Click="OnMoreDetails" IsEnabled="False" />
+            <Button x:Name="ReadAloudBtn" Content="🔊 Read Aloud"
+                    Style="{StaticResource CloseBtn}" Margin="0,0,8,0"
+                    Foreground="#FFD700" Click="OnReadAloud" IsEnabled="False" />
+            <Button x:Name="CopyBtn" Content="📋 Copy"
+                    Style="{StaticResource CloseBtn}"
+                    Click="OnCopy" IsEnabled="False" />
+        </StackPanel>
+    </Grid>
+</Window>
