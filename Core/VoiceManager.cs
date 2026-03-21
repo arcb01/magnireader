@@ -35,6 +35,9 @@ public class VoiceManager : IDisposable
     private Dictionary<string, List<string>> _priorities = new();
     private int _unavailableNaturalVoiceCount;
 
+    // Cache: avoids re-running LINQ scoring on every Speak() call
+    private readonly Dictionary<string, MagniVoice?> _voiceSelectionCache = new(StringComparer.OrdinalIgnoreCase);
+
     /// <summary>
     /// Number of Natural/Neural voices that are installed on the system but
     /// cannot be accessed by the standard WinRT SpeechSynthesizer API.
@@ -298,6 +301,7 @@ public class VoiceManager : IDisposable
     public void LoadPriorities(AppSettings settings)
     {
         _priorities = settings.VoicePriorities ?? new();
+        _voiceSelectionCache.Clear(); // Invalidate cache when priorities change
     }
 
     /// <summary>
@@ -308,6 +312,10 @@ public class VoiceManager : IDisposable
     {
         var langCode = culture.TwoLetterISOLanguageName;
 
+        // Check cache first — voice list and priorities don't change during runtime
+        if (_voiceSelectionCache.TryGetValue(langCode, out var cached))
+            return cached;
+
         // Check user priority first
         if (_priorities.TryGetValue(langCode, out var priorityList) && priorityList.Count > 0)
         {
@@ -316,7 +324,11 @@ public class VoiceManager : IDisposable
                 var voice = _allVoices.FirstOrDefault(v =>
                     v.DisplayName.Equals(name, StringComparison.OrdinalIgnoreCase) &&
                     v.IsPlayable);
-                if (voice != null) return voice;
+                if (voice != null)
+                {
+                    _voiceSelectionCache[langCode] = voice;
+                    return voice;
+                }
             }
         }
 
@@ -399,6 +411,7 @@ public class VoiceManager : IDisposable
         {
             System.Diagnostics.Debug.WriteLine(
                 $"[VoiceManager] ★ Selected: {match.DisplayName} [{match.Language}]");
+            _voiceSelectionCache[langCode] = match;
             return match;
         }
 
@@ -410,6 +423,7 @@ public class VoiceManager : IDisposable
         {
             System.Diagnostics.Debug.WriteLine(
                 $"[VoiceManager] No Neural voice for '{langCode}', falling back to Multilingual: {multilingual.DisplayName}");
+            _voiceSelectionCache[langCode] = multilingual;
             return multilingual;
         }
 
@@ -420,11 +434,14 @@ public class VoiceManager : IDisposable
         {
             System.Diagnostics.Debug.WriteLine(
                 $"[VoiceManager] No Multilingual voice, falling back to Neural: {anyNeural.DisplayName}");
+            _voiceSelectionCache[langCode] = anyNeural;
             return anyNeural;
         }
 
         // Fallback 3: Any playable voice (last resort)
-        return _allVoices.FirstOrDefault(v => v.IsPlayable);
+        var fallback = _allVoices.FirstOrDefault(v => v.IsPlayable);
+        _voiceSelectionCache[langCode] = fallback;
+        return fallback;
     }
 
     /// <summary>

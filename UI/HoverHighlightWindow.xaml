@@ -1,0 +1,30 @@
+<Window x:Class="MagniReader.UI.HoverHighlightWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="MagniReader Hover"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        Topmost="True"
+        ShowInTaskbar="False"
+        Focusable="False"
+        IsHitTestVisible="False">
+
+    <Border x:Name="GlowBorder"
+            CornerRadius="4"
+            BorderThickness="2.5"
+            Opacity="0">
+        <Border.BorderBrush>
+            <SolidColorBrush Color="#FFD700" />
+        </Border.BorderBrush>
+        <Border.Effect>
+            <DropShadowEffect Color="#FFD700"
+                              ShadowDepth="0"
+                              BlurRadius="14"
+                              Opacity="0.7" />
+        </Border.Effect>
+        <Border.Background>
+            <SolidColorBrush Color="#FFD700" Opacity="0.05" />
+        </Border.Background>
+    </Border>
+</Window>

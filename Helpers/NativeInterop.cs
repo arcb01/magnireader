@@ -37,6 +37,7 @@ public static class NativeInterop
 
     public const int WH_MOUSE_LL = 14;
     public const int WM_LBUTTONDOWN = 0x0201;
+    public const int WM_MOUSEMOVE = 0x0200;
 
     // ─── Low-Level Keyboard Hook ───────────────────────────────────
     public delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
@@ -46,6 +47,7 @@ public static class NativeInterop
 
     public const int WH_KEYBOARD_LL = 13;
     public const int WM_KEYDOWN = 0x0100;
+    public const int WM_KEYUP = 0x0101;
     public const int VK_ESCAPE = 0x1B;
 
     // ─── Cursor Position ───────────────────────────────────────────

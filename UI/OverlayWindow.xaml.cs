@@ -124,25 +124,37 @@ public partial class OverlayWindow : Window
         });
     }
 
-    public void HighlightWord(int charPosition, int charLength)
+    /// <summary>
+    /// Starts a smooth progress animation over the real audio duration.
+    /// This replaces word-by-word progress — the fill and scan line
+    /// animate linearly from start to end over the exact speech time.
+    /// </summary>
+    public void StartProgress(double durationMs)
     {
-        if (!_isShowing || string.IsNullOrEmpty(_fullText)) return;
+        if (!_isShowing || durationMs <= 0) return;
 
         Dispatcher.BeginInvoke(() =>
         {
-            if (_fullText.Length <= 0) return;
+            var duration = TimeSpan.FromMilliseconds(durationMs);
 
-            double progress = Math.Min(1.0, (double)(charPosition + charLength) / _fullText.Length);
+            // Animate ReadingFill width from 0 to full element width
+            var fillAnim = new DoubleAnimation(0, _holeRect.Width, duration);
+            fillAnim.FillBehavior = FillBehavior.HoldEnd;
+            ReadingFill.BeginAnimation(WidthProperty, fillAnim);
 
-
-
-            // Reading fill grows from left within the text element
-            ReadingFill.Width = _holeRect.Width * progress;
-
-            // Scanning line moves across the element
-            double scanX = _holeRect.X + _holeRect.Width * progress;
-            Canvas.SetLeft(ScanLine, Math.Min(scanX, _holeRect.X + _holeRect.Width - 2));
+            // Animate ScanLine position from left to right edge
+            var scanAnim = new DoubleAnimation(
+                _holeRect.X, _holeRect.X + _holeRect.Width - 2, duration);
+            scanAnim.FillBehavior = FillBehavior.HoldEnd;
+            ScanLine.BeginAnimation(Canvas.LeftProperty, scanAnim);
         });
+    }
+
+    public void HighlightWord(int charPosition, int charLength)
+    {
+        // When StartProgress animation is running, this is not needed.
+        // Kept for backward compatibility if animation isn't started.
+        if (!_isShowing || string.IsNullOrEmpty(_fullText)) return;
     }
 
     public void HideOverlay()
@@ -152,6 +164,10 @@ public partial class OverlayWindow : Window
 
         Dispatcher.BeginInvoke(() =>
         {
+            // Cancel any running progress animations
+            ReadingFill.BeginAnimation(WidthProperty, null);
+            ScanLine.BeginAnimation(Canvas.LeftProperty, null);
+
             var fadeOut = new DoubleAnimation(1.0, 0.0, TimeSpan.FromMilliseconds(150));
             fadeOut.Completed += (s, e) =>
             {

@@ -28,6 +28,11 @@ public class InputManager : IDisposable
 
     private bool _isReading;
 
+    // Hover preview throttle
+    private DateTime _lastHoverTime = DateTime.MinValue;
+    private const int HoverThrottleMs = 150;
+    private bool _isHovering;
+
     /// <summary>
     /// Fired when Ctrl+Alt + Left Click is detected. 
     /// Provides the click screen coordinates (X, Y).
@@ -44,6 +49,17 @@ public class InputManager : IDisposable
     /// Fired when Ctrl+S is pressed to trigger screen snip analysis.
     /// </summary>
     public event Action? SnipTriggered;
+
+    /// <summary>
+    /// Fired when Ctrl+Alt is held and the mouse moves over a new position.
+    /// Throttled to ~150ms. Provides screen coordinates (X, Y).
+    /// </summary>
+    public event Action<int, int>? HoverPreview;
+
+    /// <summary>
+    /// Fired when Ctrl+Alt is released after hovering, hiding the preview.
+    /// </summary>
+    public event Action? HoverEnd;
 
     // ─── Win32 for checking modifier key state ──────────────────
     [DllImport("user32.dll")]
@@ -128,6 +144,36 @@ public class InputManager : IDisposable
             }
         }
 
+        // Ctrl+Alt + Mouse Move → hover preview
+        if (nCode >= 0 && wParam == (IntPtr)NativeInterop.WM_MOUSEMOVE)
+        {
+            bool ctrlHeld = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+            bool altHeld = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+
+            if (ctrlHeld && altHeld && !_isReading)
+            {
+                var now = DateTime.UtcNow;
+                if ((now - _lastHoverTime).TotalMilliseconds >= HoverThrottleMs)
+                {
+                    _lastHoverTime = now;
+                    _isHovering = true;
+                    var hookStruct = Marshal.PtrToStructure<MSLLHOOKSTRUCT>(lParam);
+                    Application.Current?.Dispatcher.BeginInvoke(() =>
+                    {
+                        HoverPreview?.Invoke(hookStruct.pt.X, hookStruct.pt.Y);
+                    });
+                }
+            }
+            else if (_isHovering && !(ctrlHeld && altHeld))
+            {
+                _isHovering = false;
+                Application.Current?.Dispatcher.BeginInvoke(() =>
+                {
+                    HoverEnd?.Invoke();
+                });
+            }
+        }
+
         return NativeInterop.CallNextHookEx(_mouseHookId, nCode, wParam, lParam);
     }
 
@@ -159,6 +205,20 @@ public class InputManager : IDisposable
                     });
                     return (IntPtr)1; // swallow
                 }
+            }
+        }
+
+        // Detect Ctrl or Alt key-up → end hover if active
+        if (nCode >= 0 && wParam == (IntPtr)NativeInterop.WM_KEYUP && _isHovering)
+        {
+            int vkCode = Marshal.ReadInt32(lParam);
+            if (vkCode == VK_CONTROL || vkCode == VK_MENU)
+            {
+                _isHovering = false;
+                Application.Current?.Dispatcher.BeginInvoke(() =>
+                {
+                    HoverEnd?.Invoke();
+                });
             }
         }
 

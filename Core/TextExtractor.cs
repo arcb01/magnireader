@@ -21,8 +21,109 @@ public class TextExtractor
     }
 
     /// <summary>
+    /// Context from a fast extraction, used to defer sibling collection.
+    /// </summary>
+    public class ExtractionContext
+    {
+        internal AutomationElement? Element { get; set; }
+        internal AutomationElement? SiblingStartElement { get; set; }
+        internal int ClickX { get; set; }
+        internal int ClickY { get; set; }
+    }
+
+    /// <summary>
+    /// Fast extraction: gets ONLY the first text element at the click point.
+    /// Skips sibling traversal for minimum latency.
+    /// Returns the extraction context so siblings can be collected later.
+    /// </summary>
+    public (TextElement? firstElement, ExtractionContext? context) ExtractFirstElementAtPoint(int x, int y)
+    {
+        try
+        {
+            var point = new System.Windows.Point(x, y);
+            var element = AutomationElement.FromPoint(point);
+            if (element == null) return (null, null);
+
+            System.Diagnostics.Debug.WriteLine(
+                $"[TextExtractor] Click at ({x},{y}): " +
+                $"Name='{Truncate(element.Current.Name, 60)}', " +
+                $"Type={element.Current.ControlType.ProgrammaticName}");
+
+            var ctx = new ExtractionContext { Element = element, ClickX = x, ClickY = y };
+
+            // STEP 1: Try the exact element
+            var result = TryExtractFromElement(element);
+            if (result != null)
+            {
+                ctx.SiblingStartElement = element;
+                return (result, ctx);
+            }
+
+            // STEP 2: Try immediate children (the element might be a container)
+            var childResult = TryChildren(element, maxChildren: 10, maxDepth: 2);
+            if (childResult != null)
+            {
+                ctx.SiblingStartElement = element;
+                return (childResult, ctx);
+            }
+
+            // STEP 3: Walk up to parent and find the nearest sibling with text
+            var nearestResult = FindNearestTextElement(element, x, y);
+            if (nearestResult != null)
+            {
+                // Find the matching automation element for later sibling collection
+                var walker = TreeWalker.ControlViewWalker;
+                var parent = walker.GetParent(element);
+                if (parent != null)
+                {
+                    var sibling = walker.GetFirstChild(parent);
+                    while (sibling != null)
+                    {
+                        var txt = GetTextFromElement(sibling);
+                        if (txt != null && txt.Trim() == nearestResult.Text)
+                        {
+                            ctx.SiblingStartElement = sibling;
+                            break;
+                        }
+                        sibling = walker.GetNextSibling(sibling);
+                    }
+                }
+                return (nearestResult, ctx);
+            }
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[TextExtractor] Error: {ex.Message}");
+        }
+
+        return (null, null);
+    }
+
+    /// <summary>
+    /// Collects following siblings from a previous extraction context.
+    /// Designed to be called on a background thread after speech has started.
+    /// </summary>
+    public List<TextElement> CollectSiblingsFromContext(ExtractionContext context)
+    {
+        var elements = new List<TextElement>();
+        try
+        {
+            if (context.SiblingStartElement != null)
+            {
+                CollectFollowingSiblings(context.SiblingStartElement, elements, maxCount: 10);
+            }
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[TextExtractor] Sibling collection error: {ex.Message}");
+        }
+        return elements;
+    }
+
+    /// <summary>
     /// Extracts text at the given screen coordinates.
     /// Returns the clicked element PLUS following siblings for continuous reading.
+    /// (Legacy method — kept for compatibility)
     /// </summary>
     public List<TextElement> ExtractTextAtPoint(int x, int y)
     {

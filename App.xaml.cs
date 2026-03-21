@@ -31,6 +31,7 @@ public partial class App : Application
     private SpeechEngine? _speechEngine;
     private SettingsStore? _settingsStore;
     private VisionAnalyzer? _visionAnalyzer;
+    private HoverHighlightWindow? _hoverHighlight;
 
     private bool _isReading;
     private string _currentReadingText = string.Empty;
@@ -99,6 +100,7 @@ public partial class App : Application
         _speechEngine = new SpeechEngine(_voiceManager);
         _inputManager = new InputManager();
         _overlay = new OverlayWindow();
+        _hoverHighlight = new HoverHighlightWindow();
 
         // Apply saved settings
         ApplySettings(_settingsStore.Settings);
@@ -113,8 +115,14 @@ public partial class App : Application
         _inputManager.ReadTriggered += OnReadTriggered;
         _inputManager.CancelTriggered += OnCancelTriggered;
         _inputManager.SnipTriggered += OnSnipTriggered;
+        _inputManager.HoverPreview += OnHoverPreview;
+        _inputManager.HoverEnd += OnHoverEnd;
         _speechEngine.WordReached += OnWordReached;
         _speechEngine.SpeechCompleted += OnSpeechCompleted;
+        _speechEngine.PlaybackStarted += (durationMs) =>
+        {
+            _overlay?.StartProgress(durationMs);
+        };
 
         // Initialize vision analyzer
         _visionAnalyzer = new VisionAnalyzer();
@@ -131,6 +139,10 @@ public partial class App : Application
         // Show the overlay window (hidden) to initialize it
         _overlay.Show();
         _overlay.Visibility = Visibility.Collapsed;
+
+        // Initialize hover highlight (hidden)
+        _hoverHighlight.Show();
+        _hoverHighlight.Visibility = Visibility.Collapsed;
 
         CrashLogger.LogInfo("Startup complete");
     }
@@ -235,7 +247,78 @@ public partial class App : Application
             StopReading();
         }
 
+        // Hide hover highlight when starting to read
+        _hoverHighlight?.HideHighlight();
         StartReading(clickX, clickY);
+    }
+
+    // ─── Hover Preview ──────────────────────────────────────────
+
+    private Rect _lastHoverRect = Rect.Empty;
+
+    private void OnHoverPreview(int x, int y)
+    {
+        if (_isReading) return;
+
+        try
+        {
+            var point = new System.Windows.Point(x, y);
+            var element = System.Windows.Automation.AutomationElement.FromPoint(point);
+            if (element == null)
+            {
+                _hoverHighlight?.HideHighlight();
+                return;
+            }
+
+            var rect = element.Current.BoundingRectangle;
+            if (rect == Rect.Empty || rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
+            {
+                _hoverHighlight?.HideHighlight();
+                return;
+            }
+
+            // Skip if we're still on the same element (avoid flicker)
+            if (rect == _lastHoverRect) return;
+            _lastHoverRect = rect;
+
+            // Try to get text from this element
+            string text = "";
+            try
+            {
+                text = element.Current.Name ?? "";
+                if (string.IsNullOrWhiteSpace(text))
+                {
+                    // Try ValuePattern
+                    if (element.TryGetCurrentPattern(
+                        System.Windows.Automation.ValuePattern.Pattern, out var pattern))
+                    {
+                        text = ((System.Windows.Automation.ValuePattern)pattern).Current.Value ?? "";
+                    }
+                }
+            }
+            catch { }
+
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                _hoverHighlight?.HideHighlight();
+                _lastHoverRect = Rect.Empty;
+                return;
+            }
+
+            // Show highlight
+            _hoverHighlight?.HighlightElement(rect, text);
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[App] Hover error: {ex.Message}");
+            _hoverHighlight?.HideHighlight();
+        }
+    }
+
+    private void OnHoverEnd()
+    {
+        _lastHoverRect = Rect.Empty;
+        _hoverHighlight?.HideHighlight();
     }
 
     private void StartReading(int clickX, int clickY)
@@ -243,12 +326,12 @@ public partial class App : Application
         var pipelineSw = Stopwatch.StartNew();
         try
         {
-            // Extract text at the clicked position
-            var textElements = _textExtractor!.ExtractTextAtPoint(clickX, clickY);
+            // FAST PATH: Extract only the first element (skips sibling traversal)
+            var (firstElement, extractionContext) = _textExtractor!.ExtractFirstElementAtPoint(clickX, clickY);
             System.Diagnostics.Debug.WriteLine(
-                $"[App] ⏱ Text extraction: {pipelineSw.ElapsedMilliseconds}ms");
+                $"[App] ⏱ Fast text extraction: {pipelineSw.ElapsedMilliseconds}ms");
 
-            if (textElements.Count == 0)
+            if (firstElement == null || string.IsNullOrWhiteSpace(firstElement.Text))
             {
                 _trayIcon?.ShowBalloonTip(
                     "MagniReader",
@@ -257,27 +340,43 @@ public partial class App : Application
                 return;
             }
 
-            // Build the continuous reading queue
-            _readingQueue = textElements.Where(e => !string.IsNullOrWhiteSpace(e.Text)).ToList();
+            // Start with just the first element — speak immediately
+            _readingQueue = new List<TextExtractor.TextElement> { firstElement };
             _readingIndex = 0;
-
-            if (_readingQueue.Count == 0)
-            {
-                _trayIcon?.ShowBalloonTip(
-                    "MagniReader",
-                    "No readable text found.",
-                    BalloonIcon.Warning);
-                return;
-            }
 
             _isReading = true;
             _inputManager!.SetReadingState(true);
 
             System.Diagnostics.Debug.WriteLine(
-                $"[App] Starting continuous reading: {_readingQueue.Count} element(s)");
+                $"[App] Starting reading first element immediately (siblings deferred)");
 
-            // Start reading the first element
+            // Start reading the first element NOW — before collecting siblings
             ReadCurrentElement(showOverlay: true, pipelineSw);
+
+            // Collect siblings in the background while speech is already playing
+            if (extractionContext != null)
+            {
+                _ = Task.Run(() =>
+                {
+                    var siblingsSw = Stopwatch.StartNew();
+                    var siblings = _textExtractor.CollectSiblingsFromContext(extractionContext);
+                    System.Diagnostics.Debug.WriteLine(
+                        $"[App] ⏱ Deferred sibling collection: {siblingsSw.ElapsedMilliseconds}ms, found {siblings.Count} sibling(s)");
+
+                    if (siblings.Count > 0)
+                    {
+                        Dispatcher.BeginInvoke(() =>
+                        {
+                            if (_isReading)
+                            {
+                                _readingQueue.AddRange(siblings.Where(e => !string.IsNullOrWhiteSpace(e.Text)));
+                                System.Diagnostics.Debug.WriteLine(
+                                    $"[App] Reading queue updated: {_readingQueue.Count} total element(s)");
+                            }
+                        });
+                    }
+                });
+            }
         }
         catch (Exception ex)
         {

@@ -54,6 +54,8 @@ public class SpeechEngine : IDisposable
     public event Action<int, int>? WordReached;
     public event Action? SpeechCompleted;
     public event Action? SpeechStarted;
+    /// <summary>Fires when audio physically starts playing, with the real duration in ms.</summary>
+    public event Action<double>? PlaybackStarted;
 
     public bool IsSpeaking => _isSpeaking;
 
@@ -61,6 +63,44 @@ public class SpeechEngine : IDisposable
     {
         _voiceManager = voiceManager;
         _synth = new SpeechSynthesizer();
+        InitPersistentMediaPlayer();
+    }
+
+    /// <summary>
+    /// Creates the persistent MediaPlayer once. Reused across all speech calls.
+    /// </summary>
+    private void InitPersistentMediaPlayer()
+    {
+        _mediaPlayer = new MediaPlayer();
+        _mediaPlayer.Volume = _volume / 100.0;
+
+        _mediaPlayer.MediaEnded += (s, e) =>
+        {
+            System.Windows.Application.Current?.Dispatcher.BeginInvoke(() =>
+            {
+                if (_isSpeaking)
+                {
+                    _isSpeaking = false;
+                    StopWordTimer();
+                    SpeechCompleted?.Invoke();
+                }
+            });
+        };
+
+        _mediaPlayer.MediaFailed += (s, e) =>
+        {
+            System.Diagnostics.Debug.WriteLine(
+                $"[Speech] MediaPlayer playback failed: {e.Error}");
+            System.Windows.Application.Current?.Dispatcher.BeginInvoke(() =>
+            {
+                if (_isSpeaking)
+                {
+                    _isSpeaking = false;
+                    StopWordTimer();
+                    SpeechCompleted?.Invoke();
+                }
+            });
+        };
     }
 
     /// <summary>
@@ -265,16 +305,20 @@ public class SpeechEngine : IDisposable
         // Extract word timings without blocking playback
         _ = Task.Run(() => ExtractWordTimings(text, result));
 
-        // Try native MediaPlayer first (lower latency than NAudio)
+        // Calculate REAL audio duration from the WAV stream
+        double realDurationMs = GetStreamDurationMs(result);
+        System.Diagnostics.Debug.WriteLine(
+            $"[Speech] Real audio duration: {realDurationMs:F0}ms");
+
         try
         {
-            PlayViaNativeMediaPlayer(result, token, sw);
+            PlayViaNativeMediaPlayer(result, token, sw, realDurationMs);
         }
         catch (Exception ex)
         {
             System.Diagnostics.Debug.WriteLine(
                 $"[Speech] MediaPlayer failed ({ex.Message}), falling back to NAudio");
-            PlayViaNAudio(result, token, sw);
+            PlayViaNAudio(result, token, sw, realDurationMs);
         }
     }
 
@@ -282,44 +326,17 @@ public class SpeechEngine : IDisposable
     /// Plays SpeechSynthesisStream via native Windows MediaPlayer.
     /// This is the same playback pipeline Windows Narrator uses.
     /// </summary>
-    private void PlayViaNativeMediaPlayer(SpeechSynthesisStream stream, CancellationToken token, Stopwatch sw)
+    private void PlayViaNativeMediaPlayer(SpeechSynthesisStream stream, CancellationToken token, Stopwatch sw, double realDurationMs)
     {
-        CleanupMediaPlayer();
+        // Reuse the persistent MediaPlayer — just swap the source
+        if (_mediaPlayer == null) InitPersistentMediaPlayer();
 
-        _mediaPlayer = new MediaPlayer();
-        _mediaPlayer.Volume = _volume / 100.0;
+        _mediaPlayer!.Pause();
         _useMediaPlayerForWordTimer = true;
 
         var source = MediaSource.CreateFromStream(stream, stream.ContentType);
         _mediaPlayer.Source = source;
-
-        _mediaPlayer.MediaEnded += (s, e) =>
-        {
-            System.Windows.Application.Current?.Dispatcher.BeginInvoke(() =>
-            {
-                if (_isSpeaking)
-                {
-                    _isSpeaking = false;
-                    StopWordTimer();
-                    SpeechCompleted?.Invoke();
-                }
-            });
-        };
-
-        _mediaPlayer.MediaFailed += (s, e) =>
-        {
-            System.Diagnostics.Debug.WriteLine(
-                $"[Speech] MediaPlayer playback failed: {e.Error}");
-            System.Windows.Application.Current?.Dispatcher.BeginInvoke(() =>
-            {
-                if (_isSpeaking)
-                {
-                    _isSpeaking = false;
-                    StopWordTimer();
-                    SpeechCompleted?.Invoke();
-                }
-            });
-        };
+        _mediaPlayer.Volume = _volume / 100.0;
 
         if (token.IsCancellationRequested) return;
 
@@ -328,12 +345,50 @@ public class SpeechEngine : IDisposable
 
         StartWordTimer();
         _mediaPlayer.Play();
+
+        // Notify with real duration for accurate progress animation
+        System.Windows.Application.Current?.Dispatcher.BeginInvoke(
+            () => PlaybackStarted?.Invoke(realDurationMs));
+    }
+
+    /// <summary>
+    /// Gets the real audio duration by reading the WAV byte rate from the stream header.
+    /// WAV byte rate is at offset 28 (4 bytes, little-endian).
+    /// Duration = (streamSize - 44 header bytes) / byteRate * 1000.
+    /// </summary>
+    private double GetStreamDurationMs(SpeechSynthesisStream stream)
+    {
+        try
+        {
+            var inputStream = stream.GetInputStreamAt(28);
+            var reader = new Windows.Storage.Streams.DataReader(inputStream);
+            reader.LoadAsync(4).AsTask().GetAwaiter().GetResult();
+            uint byteRate = reader.ReadUInt32();
+            reader.DetachStream();
+
+            // Reset stream position to start for playback
+            stream.Seek(0);
+
+            if (byteRate > 0)
+            {
+                long dataSize = Math.Max(0, (long)stream.Size - 44);
+                return (double)dataSize / byteRate * 1000.0;
+            }
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine(
+                $"[Speech] WAV duration parse failed: {ex.Message}");
+        }
+
+        // Fallback: assume 32kB/s (16kHz, 16-bit, mono)
+        return (double)Math.Max(0, (long)stream.Size - 44) / 32000.0 * 1000.0;
     }
 
     /// <summary>
     /// Fallback: plays SpeechSynthesisStream via NAudio WaveOutEvent.
     /// </summary>
-    private void PlayViaNAudio(SpeechSynthesisStream result, CancellationToken token, Stopwatch sw)
+    private void PlayViaNAudio(SpeechSynthesisStream result, CancellationToken token, Stopwatch sw, double realDurationMs)
     {
         CleanupStreamResources();
         _useMediaPlayerForWordTimer = false;
@@ -361,6 +416,10 @@ public class SpeechEngine : IDisposable
 
         StartWordTimer();
         _waveOut.Play();
+
+        // Notify with real duration for accurate progress animation
+        System.Windows.Application.Current?.Dispatcher.BeginInvoke(
+            () => PlaybackStarted?.Invoke(realDurationMs));
     }
 
     private void OnWaveOutPlaybackStopped(object? sender, StoppedEventArgs e)
@@ -427,6 +486,11 @@ public class SpeechEngine : IDisposable
             _useMediaPlayerForWordTimer = false;
             StartWordTimer();
 
+            // Notify with estimated duration (no WAV stream for SAPI5)
+            double sapiDurationMs = text.Length * 70.0;
+            System.Windows.Application.Current?.Dispatcher.BeginInvoke(
+                () => PlaybackStarted?.Invoke(sapiDurationMs));
+
             // Event-based wait (responds instantly vs Thread.Sleep polling)
             using var doneEvent = new ManualResetEventSlim(false);
             void onDone(object? s, SapiSynth.SpeakCompletedEventArgs e) => doneEvent.Set();
@@ -474,9 +538,8 @@ public class SpeechEngine : IDisposable
 
         StopWordTimer();
 
-        // Stop MediaPlayer
-        try { _mediaPlayer?.Pause(); }
-        catch { }
+        // Reset MediaPlayer (keep alive for reuse)
+        ResetMediaPlayer();
 
         // Stop NAudio WaveOut
         try { _waveOut?.Stop(); }
@@ -495,7 +558,26 @@ public class SpeechEngine : IDisposable
         }
     }
 
-    private void CleanupMediaPlayer()
+    /// <summary>
+    /// Resets the persistent MediaPlayer without disposing it (reuse optimization).
+    /// </summary>
+    private void ResetMediaPlayer()
+    {
+        try
+        {
+            if (_mediaPlayer != null)
+            {
+                _mediaPlayer.Pause();
+                _mediaPlayer.Source = null;
+            }
+        }
+        catch { }
+    }
+
+    /// <summary>
+    /// Fully disposes the MediaPlayer. Only called at app shutdown.
+    /// </summary>
+    private void DisposeMediaPlayer()
     {
         try
         {
@@ -605,9 +687,6 @@ public class SpeechEngine : IDisposable
         _wordTimer = new System.Threading.Timer(_ =>
         {
             if (!_isSpeaking) return;
-            // Check if the active player is still alive
-            if (_useMediaPlayerForWordTimer && _mediaPlayer == null) return;
-            if (!_useMediaPlayerForWordTimer && _waveOut == null) return;
 
             var elapsed = DateTime.UtcNow - startTime;
 
@@ -637,7 +716,7 @@ public class SpeechEngine : IDisposable
     public void Dispose()
     {
         Cancel();
-        CleanupMediaPlayer();
+        DisposeMediaPlayer();
 
         try { _waveOut?.Dispose(); } catch { }
         _waveOut = null;
