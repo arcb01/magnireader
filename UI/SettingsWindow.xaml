@@ -91,6 +91,56 @@
                     <Border Background="#2A2A3E" Padding="16" CornerRadius="0,6,6,6">
                         <ScrollViewer VerticalScrollBarVisibility="Auto">
                             <StackPanel>
+                                <TextBlock Text="VOICE ENGINE" FontWeight="Bold" FontSize="11"
+                                           Foreground="#F5C2E7" Margin="0,0,0,8" />
+
+                                <ComboBox x:Name="EngineCombo" SelectionChanged="EngineCombo_SelectionChanged">
+                                    <ComboBoxItem Content="Windows voices (SAPI / OneCore)" IsSelected="True" />
+                                    <ComboBoxItem Content="Kokoro (offline neural, English &amp; Spanish)" />
+                                </ComboBox>
+
+                                <Border x:Name="KokoroPanel" Background="#313244" CornerRadius="8"
+                                        Padding="12" Margin="0,0,0,14" Visibility="Collapsed">
+                                    <StackPanel>
+                                        <TextBlock Text="English voice" />
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <ComboBox x:Name="KokoroEnglishCombo" DisplayMemberPath="DisplayName" />
+                                            <Button Grid.Column="1" Content="▶" Style="{StaticResource IconButton}"
+                                                    Margin="6,0,0,8" ToolTip="Preview"
+                                                    Click="PreviewKokoroEnglish_Click" />
+                                        </Grid>
+
+                                        <TextBlock Text="Spanish voice" />
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <ComboBox x:Name="KokoroSpanishCombo" DisplayMemberPath="DisplayName" />
+                                            <Button Grid.Column="1" Content="▶" Style="{StaticResource IconButton}"
+                                                    Margin="6,0,0,8" ToolTip="Preview"
+                                                    Click="PreviewKokoroSpanish_Click" />
+                                        </Grid>
+
+                                        <TextBlock x:Name="KokoroStatusText" FontSize="11" Foreground="#A6ADC8"
+                                                   TextWrapping="Wrap" Margin="0,0,0,6" />
+                                        <ProgressBar x:Name="KokoroProgress" Height="6" Minimum="0" Maximum="1"
+                                                     Foreground="#FFD700" Background="#45475A" BorderThickness="0"
+                                                     Margin="0,0,0,6" Visibility="Collapsed" />
+                                        <Button x:Name="KokoroDownloadBtn" Content="⬇ Download Kokoro model"
+                                                Background="#89B4FA" Foreground="#1E1E2E"
+                                                FontWeight="SemiBold" Height="30" BorderThickness="0"
+                                                Cursor="Hand" Visibility="Collapsed"
+                                                Click="KokoroDownload_Click" />
+                                        <TextBlock FontSize="11" Foreground="#6C7086" TextWrapping="Wrap" Margin="0,6,0,0"
+                                                   Text="Other languages (Catalan, French, …) keep using the Windows voices. If Kokoro fails, a Windows voice reads instead." />
+                                    </StackPanel>
+                                </Border>
+
                                 <TextBlock Text="SPEECH" FontWeight="Bold" FontSize="11"
                                            Foreground="#F5C2E7" Margin="0,0,0,8" />
 

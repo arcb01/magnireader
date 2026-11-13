@@ -36,9 +36,15 @@ public partial class App : Application
     private bool _isReading;
     private string _currentReadingText = string.Empty;
 
+    // Finds the on-screen position of each word of the element being read
+    private WordLocator? _wordLocator;
+
     // Continuous reading queue
     private List<TextExtractor.TextElement> _readingQueue = new();
     private int _readingIndex;
+    // Language chosen for the current reading; short fragments keep it instead of
+    // being re-detected (a link or a Latin word used to switch voices mid-reading).
+    private System.Globalization.CultureInfo? _readingCulture;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -119,10 +125,6 @@ public partial class App : Application
         _inputManager.HoverEnd += OnHoverEnd;
         _speechEngine.WordReached += OnWordReached;
         _speechEngine.SpeechCompleted += OnSpeechCompleted;
-        _speechEngine.PlaybackStarted += (durationMs) =>
-        {
-            _overlay?.StartProgress(durationMs);
-        };
 
         // Initialize vision analyzer
         _visionAnalyzer = new VisionAnalyzer();
@@ -342,6 +344,7 @@ public partial class App : Application
 
             // Start with just the first element — speak immediately
             _readingQueue = new List<TextExtractor.TextElement> { firstElement };
+            _readingCulture = null;
             _readingIndex = 0;
 
             _isReading = true;
@@ -398,6 +401,9 @@ public partial class App : Application
         _speechEngine?.Cancel();
         _overlay?.HideOverlay();
 
+        _wordLocator?.Dispose();
+        _wordLocator = null;
+
         if (_trayIcon != null)
             _trayIcon.ToolTipText = "MagniReader — Ctrl+Alt+Click to read";
     }
@@ -410,7 +416,8 @@ public partial class App : Application
 
     private void OnWordReached(int charPosition, int charLength)
     {
-        _overlay?.HighlightWord(charPosition, charLength);
+        if (!_isReading || _wordLocator == null) return;
+        _overlay?.HighlightWord(_wordLocator.GetWordRect(charPosition));
     }
 
     private void OnSpeechCompleted()
@@ -448,7 +455,7 @@ public partial class App : Application
         var element = _readingQueue[_readingIndex];
         _currentReadingText = element.Text;
 
-        var culture = _langDetector!.DetectLanguage(_currentReadingText);
+        var culture = ChooseReadingLanguage(_currentReadingText);
         if (pipelineSw != null)
             System.Diagnostics.Debug.WriteLine(
                 $"[App] ⏱ Lang detection: {pipelineSw.ElapsedMilliseconds}ms");
@@ -471,6 +478,11 @@ public partial class App : Application
                 SystemParameters.VirtualScreenHeight / 2);
         }
 
+        // Start locating each word on screen. This must happen before the overlay
+        // is drawn over the element (the OCR fallback takes a screenshot now).
+        _wordLocator?.Dispose();
+        _wordLocator = WordLocator.Start(_currentReadingText, element.BoundingRect, element.Source, culture, element.Range);
+
         if (showOverlay)
         {
             _overlay!.ShowOverlay(rect, _currentReadingText, culture.EnglishName);
@@ -487,6 +499,23 @@ public partial class App : Application
                 $"[App] ⏱ Full pipeline complete: {pipelineSw.ElapsedMilliseconds}ms");
     }
 
+    /// <summary>
+    /// Detects the language once per reading and keeps it: later elements only switch
+    /// language when they hold enough text (80+ letters) to be sure.
+    /// </summary>
+    private System.Globalization.CultureInfo ChooseReadingLanguage(string text)
+    {
+        int letters = text.Count(char.IsLetter);
+        if (_readingCulture != null && letters < 80)
+            return _readingCulture;
+
+        var detected = _langDetector!.DetectLanguage(text);
+        if (_readingCulture == null || detected.TwoLetterISOLanguageName != _readingCulture.TwoLetterISOLanguageName)
+            CrashLogger.LogInfo($"[App] Reading language: {detected.Name} ({letters} letters)");
+        _readingCulture = detected;
+        return detected;
+    }
+
     private void OpenSettings()
     {
         var settingsWindow = new SettingsWindow(_settingsStore!, _voiceManager!, ApplySettings);
@@ -497,6 +526,7 @@ public partial class App : Application
     {
         _speechEngine?.SetRate(settings.SpeechRate);
         _speechEngine?.SetVolume(settings.Volume);
+        _speechEngine?.ConfigureKokoro(settings);
         _overlay?.UpdateSettings(settings.DimOpacity, settings.HighlightColor);
     }
 

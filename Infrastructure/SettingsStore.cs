@@ -91,6 +91,17 @@ public class AppSettings
     /// </summary>
     public Dictionary<string, List<string>> VoicePriorities { get; set; } = new();
 
+    // ─── Kokoro (offline neural voices) ──────────────────────────
+
+    /// <summary>Speech engine: "Windows" (SAPI/OneCore voices) or "Kokoro".</summary>
+    public string SpeechEngine { get; set; } = "Windows";
+
+    /// <summary>Kokoro voice used for English text (e.g. "af_heart").</summary>
+    public string KokoroVoiceEnglish { get; set; } = "af_heart";
+
+    /// <summary>Kokoro voice used for Spanish text (e.g. "ef_dora").</summary>
+    public string KokoroVoiceSpanish { get; set; } = "ef_dora";
+
     // ─── Vision / Screenshot Analysis ────────────────────────────
 
     /// <summary>Vision API provider: "Gemini" or "OpenAI".</summary>

@@ -72,6 +72,22 @@ public static class NativeInterop
     public const int WS_EX_TRANSPARENT = 0x00000020;
     public const int WS_EX_TOOLWINDOW = 0x00000080;
 
+    // ─── Screen metrics ────────────────────────────────────────────
+    [DllImport("user32.dll")]
+    public static extern int GetSystemMetrics(int nIndex);
+
+    public const int SM_XVIRTUALSCREEN = 76;
+    public const int SM_YVIRTUALSCREEN = 77;
+    public const int SM_CXVIRTUALSCREEN = 78;
+    public const int SM_CYVIRTUALSCREEN = 79;
+
+    // ─── Exclude a window from screen captures ─────────────────────
+    // Used so the overlay doesn't appear in the screenshots taken for OCR.
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool SetWindowDisplayAffinity(IntPtr hWnd, uint dwAffinity);
+
+    public const uint WDA_EXCLUDEFROMCAPTURE = 0x00000011; // Windows 10 2004+
+
     // ─── Foreground Window ─────────────────────────────────────────
     [DllImport("user32.dll")]
     public static extern IntPtr GetForegroundWindow();

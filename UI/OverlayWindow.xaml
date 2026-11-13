@@ -21,9 +21,6 @@
         <Rectangle x:Name="DimLeft"   Fill="#99000000" />
         <Rectangle x:Name="DimRight"  Fill="#99000000" />
 
-        <!-- Reading progress fill (grows from left to right inside the element) -->
-        <Rectangle x:Name="ReadingFill" Opacity="0.15" RadiusX="4" RadiusY="4" />
-
         <!-- Highlight border around the text element -->
         <Border x:Name="HighlightBorder"
                 BorderThickness="2"
@@ -38,11 +35,22 @@
             <Border Background="Transparent" />
         </Border>
 
-        <!-- Scanning line (thin vertical line that sweeps across the text) -->
-        <Rectangle x:Name="ScanLine"
-                   Width="2"
-                   Visibility="Collapsed"
-                   Opacity="0.8" />
+        <!-- Box over the word being spoken. Moves from word to word as speech advances. -->
+        <Border x:Name="WordBox"
+                BorderThickness="2"
+                CornerRadius="3"
+                IsHitTestVisible="False"
+                Visibility="Collapsed">
+            <Border.BorderBrush>
+                <SolidColorBrush x:Name="WordBoxBorderBrush" Color="#FFD700" />
+            </Border.BorderBrush>
+            <Border.Background>
+                <SolidColorBrush x:Name="WordBoxFillBrush" Color="#FFD700" Opacity="0.25" />
+            </Border.Background>
+            <Border.Effect>
+                <DropShadowEffect x:Name="WordBoxGlow" Color="#FFD700" BlurRadius="10" ShadowDepth="0" Opacity="0.6" />
+            </Border.Effect>
+        </Border>
 
     </Canvas>
 </Window>

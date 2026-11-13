@@ -8,14 +8,10 @@ using MagniReader.Helpers;
 namespace MagniReader.UI;
 
 /// <summary>
-/// Overlay that highlights the text element being read on screen.
-/// 
-/// Instead of trying to guess individual word positions (which is unreliable
-/// without access to font metrics), we use:
-///   - A gold border around the full text element
-///   - A progress fill that grows within the element as reading advances
-///   - A thin scanning line that sweeps through the element
-///   - A progress bar at the top of the screen
+/// Overlay that highlights the text being read on screen:
+///   - The rest of the screen is dimmed and a gold border surrounds the text element
+///   - A box sits over the word being spoken and glides to the next word as
+///     speech advances (word positions come from <see cref="Core.WordLocator"/>)
 /// </summary>
 public partial class OverlayWindow : Window
 {
@@ -32,6 +28,10 @@ public partial class OverlayWindow : Window
     // Current text element rect (in overlay DIPs)
     private Rect _holeRect;
 
+    // Current word box rect (in overlay DIPs), Rect.Empty when hidden
+    private Rect _wordRect = Rect.Empty;
+    private static readonly Duration WordMoveDuration = new(TimeSpan.FromMilliseconds(60));
+
     public OverlayWindow()
     {
         InitializeComponent();
@@ -46,6 +46,12 @@ public partial class OverlayWindow : Window
             var style = NativeInterop.GetWindowLong(hwnd, NativeInterop.GWL_EXSTYLE);
             NativeInterop.SetWindowLong(hwnd, NativeInterop.GWL_EXSTYLE,
                 style | NativeInterop.WS_EX_TOOLWINDOW);
+
+            // Keep the overlay out of screen captures, so the OCR screenshot of
+            // the next element isn't dimmed or covered by the word box.
+            // Best effort: needs Windows 10 2004 or later.
+            try { NativeInterop.SetWindowDisplayAffinity(hwnd, NativeInterop.WDA_EXCLUDEFROMCAPTURE); }
+            catch { }
         }
     }
 
@@ -78,21 +84,9 @@ public partial class OverlayWindow : Window
         _holeRect = ScaleAndPosition(sourceRect);
         LayoutHighlight(_holeRect);
 
-        // Reset reading progress indicators
-        ReadingFill.Fill = new SolidColorBrush(_highlightColor);
-        Canvas.SetLeft(ReadingFill, _holeRect.X);
-        Canvas.SetTop(ReadingFill, _holeRect.Y);
-        ReadingFill.Width = 0;
-        ReadingFill.Height = _holeRect.Height;
-        ReadingFill.Visibility = Visibility.Visible;
-
-        ScanLine.Fill = new SolidColorBrush(_highlightColor);
-        Canvas.SetLeft(ScanLine, _holeRect.X);
-        Canvas.SetTop(ScanLine, _holeRect.Y);
-        ScanLine.Height = _holeRect.Height;
-        ScanLine.Visibility = Visibility.Visible;
-
-
+        // Word box starts hidden until the first word is located
+        ApplyWordBoxColor();
+        HideWordBox();
 
         Visibility = Visibility.Visible;
         Activate();
@@ -112,49 +106,83 @@ public partial class OverlayWindow : Window
             _holeRect = ScaleAndPosition(sourceRect);
             LayoutHighlight(_holeRect);
 
-            // Reset progress fill for new element
-            Canvas.SetLeft(ReadingFill, _holeRect.X);
-            Canvas.SetTop(ReadingFill, _holeRect.Y);
-            ReadingFill.Width = 0;
-            ReadingFill.Height = _holeRect.Height;
-
-            Canvas.SetLeft(ScanLine, _holeRect.X);
-            Canvas.SetTop(ScanLine, _holeRect.Y);
-            ScanLine.Height = _holeRect.Height;
+            // New element: the word box reappears on its first word
+            HideWordBox();
         });
     }
 
     /// <summary>
-    /// Starts a smooth progress animation over the real audio duration.
-    /// This replaces word-by-word progress — the fill and scan line
-    /// animate linearly from start to end over the exact speech time.
+    /// Moves the word box over the word being spoken.
+    /// <paramref name="physicalRect"/> is in physical screen pixels (as returned
+    /// by UI Automation / OCR). Pass null when the word's position is unknown:
+    /// the box then stays on the previous word rather than flickering.
+    /// Must be called on the UI thread.
     /// </summary>
-    public void StartProgress(double durationMs)
+    public void HighlightWord(Rect? physicalRect)
     {
-        if (!_isShowing || durationMs <= 0) return;
+        if (!_isShowing || physicalRect is not Rect r || r.IsEmpty || r.Width <= 0 || r.Height <= 0)
+            return;
 
-        Dispatcher.BeginInvoke(() =>
+        var target = ToOverlay(r, pad: 3);
+
+        // Ignore words that are scrolled out of the highlighted element
+        if (!_holeRect.IntersectsWith(target)) return;
+
+        bool wasHidden = _wordRect.IsEmpty || WordBox.Visibility != Visibility.Visible;
+        // Jump instead of gliding when moving to another line, so the box
+        // doesn't slide diagonally across the text.
+        bool newLine = !wasHidden && Math.Abs(target.Y - _wordRect.Y) > _wordRect.Height / 2;
+
+        _wordRect = target;
+
+        if (wasHidden || newLine)
         {
-            var duration = TimeSpan.FromMilliseconds(durationMs);
+            StopWordBoxAnimations();
+            Canvas.SetLeft(WordBox, target.X);
+            Canvas.SetTop(WordBox, target.Y);
+            WordBox.Width = target.Width;
+            WordBox.Height = target.Height;
+            WordBox.Visibility = Visibility.Visible;
+            return;
+        }
 
-            // Animate ReadingFill width from 0 to full element width
-            var fillAnim = new DoubleAnimation(0, _holeRect.Width, duration);
-            fillAnim.FillBehavior = FillBehavior.HoldEnd;
-            ReadingFill.BeginAnimation(WidthProperty, fillAnim);
-
-            // Animate ScanLine position from left to right edge
-            var scanAnim = new DoubleAnimation(
-                _holeRect.X, _holeRect.X + _holeRect.Width - 2, duration);
-            scanAnim.FillBehavior = FillBehavior.HoldEnd;
-            ScanLine.BeginAnimation(Canvas.LeftProperty, scanAnim);
-        });
+        var ease = new QuadraticEase { EasingMode = EasingMode.EaseOut };
+        AnimateTo(Canvas.LeftProperty, target.X, ease);
+        AnimateTo(Canvas.TopProperty, target.Y, ease);
+        AnimateTo(WidthProperty, target.Width, ease);
+        AnimateTo(HeightProperty, target.Height, ease);
     }
 
-    public void HighlightWord(int charPosition, int charLength)
+    private void AnimateTo(DependencyProperty property, double to, IEasingFunction ease)
     {
-        // When StartProgress animation is running, this is not needed.
-        // Kept for backward compatibility if animation isn't started.
-        if (!_isShowing || string.IsNullOrEmpty(_fullText)) return;
+        var anim = new DoubleAnimation(to, WordMoveDuration)
+        {
+            EasingFunction = ease,
+            FillBehavior = FillBehavior.HoldEnd,
+        };
+        WordBox.BeginAnimation(property, anim, HandoffBehavior.SnapshotAndReplace);
+    }
+
+    private void StopWordBoxAnimations()
+    {
+        WordBox.BeginAnimation(Canvas.LeftProperty, null);
+        WordBox.BeginAnimation(Canvas.TopProperty, null);
+        WordBox.BeginAnimation(WidthProperty, null);
+        WordBox.BeginAnimation(HeightProperty, null);
+    }
+
+    private void HideWordBox()
+    {
+        StopWordBoxAnimations();
+        WordBox.Visibility = Visibility.Collapsed;
+        _wordRect = Rect.Empty;
+    }
+
+    private void ApplyWordBoxColor()
+    {
+        WordBoxBorderBrush.Color = _highlightColor;
+        WordBoxFillBrush.Color = _highlightColor;
+        WordBoxGlow.Color = _highlightColor;
     }
 
     public void HideOverlay()
@@ -164,10 +192,6 @@ public partial class OverlayWindow : Window
 
         Dispatcher.BeginInvoke(() =>
         {
-            // Cancel any running progress animations
-            ReadingFill.BeginAnimation(WidthProperty, null);
-            ScanLine.BeginAnimation(Canvas.LeftProperty, null);
-
             var fadeOut = new DoubleAnimation(1.0, 0.0, TimeSpan.FromMilliseconds(150));
             fadeOut.Completed += (s, e) =>
             {
@@ -175,8 +199,7 @@ public partial class OverlayWindow : Window
                 BeginAnimation(OpacityProperty, null);
                 Opacity = 1.0;
                 HighlightBorder.Visibility = Visibility.Collapsed;
-                ReadingFill.Visibility = Visibility.Collapsed;
-                ScanLine.Visibility = Visibility.Collapsed;
+                HideWordBox();
             };
             BeginAnimation(OpacityProperty, fadeOut);
         });
@@ -191,9 +214,14 @@ public partial class OverlayWindow : Window
 
     // --- Private helpers ---
 
-    private Rect ScaleAndPosition(Rect sourceRect)
+    private Rect ScaleAndPosition(Rect sourceRect) => ToOverlay(sourceRect, pad: 6);
+
+    /// <summary>
+    /// Converts a physical-pixel screen rect to overlay canvas coordinates (DIPs),
+    /// adding <paramref name="pad"/> on each side and clamping to the screen.
+    /// </summary>
+    private Rect ToOverlay(Rect sourceRect, double pad)
     {
-        double pad = 6;
         var scaled = new Rect(
             sourceRect.X * _dpiScaleX,
             sourceRect.Y * _dpiScaleY,
