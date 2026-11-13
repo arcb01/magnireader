@@ -55,6 +55,58 @@ public class LanguageDetector
         }
     }
 
+    // ─── Restricted detection (Kokoro) ──────────────────────────
+
+    private static readonly Dictionary<string, HashSet<string>> StopWords = new()
+    {
+        ["en"] = new(StringComparer.Ordinal) { "the", "and", "of", "to", "in", "is", "it", "you", "that", "was", "for", "on", "are", "with", "as", "i", "his", "they", "be", "at", "have", "this", "from", "or", "had", "by", "not", "but", "what", "all", "were", "we", "when", "your", "can", "there", "an", "which", "she", "do", "how", "their", "if", "will", "up", "about", "out", "then", "them", "these", "so", "some", "her", "would", "like", "him", "into", "has", "more", "no", "could", "my", "than", "been", "who", "its", "now", "our", "just", "new", "also", "only", "after", "me", "should", "it's", "don't", "is", "use", "get", "see", "here", "click", "open", "file" },
+        ["es"] = new(StringComparer.Ordinal) { "el", "la", "de", "que", "y", "a", "en", "un", "una", "se", "no", "por", "con", "su", "para", "como", "le", "lo", "los", "las", "del", "al", "es", "son", "está", "están", "hay", "fue", "pero", "más", "o", "este", "esta", "ese", "esa", "si", "me", "ya", "muy", "sin", "sobre", "mi", "yo", "también", "hasta", "entre", "así", "desde", "eso", "ni", "nos", "ella", "sí", "bien", "donde", "ahora", "después", "siempre", "nada", "cada", "qué", "cuando", "porque", "tiene", "puede", "todo", "todos", "él", "usted", "aquí" },
+        ["ca"] = new(StringComparer.Ordinal) { "el", "la", "de", "que", "i", "a", "en", "un", "una", "és", "amb", "per", "els", "les", "del", "dels", "al", "als", "no", "es", "com", "més", "però", "aquest", "aquesta", "aquests", "són", "hi", "ha", "seu", "seva", "també", "molt", "quan", "on", "què", "perquè", "fins", "des", "sense", "tot", "tots", "totes", "fer", "està", "estan", "aquí", "així", "doncs", "mateix", "cada", "altre", "altra", "nosaltres", "jo", "ell", "ella", "meu", "teu", "si", "sí", "pot", "poden", "ja", "ara", "després", "abans", "sobre", "entre", "dins", "gràcies", "bon", "bona", "amb", "ho", "li", "em", "et", "ens", "us" },
+    };
+
+    private static readonly Dictionary<string, double> CatalanProfile = BuildTrigramProfile(
+        "que els del les per una amb com més però aquest aquesta són també molt quan perquè fins des sense tot tots fer està estan així doncs mateix cada altre nosaltres després abans entre dins gràcies poden pot seva seu aquests aquelles mentre tenir haver ésser feia havia serà seria");
+
+    /// <summary>
+    /// Picks the most likely language among <paramref name="allowed"/> (e.g. en, es, ca),
+    /// first by counting common short words, then by trigrams. Used when the full
+    /// detector picks a language Kokoro can't speak: short English or Spanish snippets
+    /// were often taken for French, Portuguese, Dutch or Danish.
+    /// </summary>
+    public string DetectAmong(string text, params string[] allowed)
+    {
+        var words = text.ToLowerInvariant()
+            .Replace('\u2019', '\'')
+            .Split(default(char[]), StringSplitOptions.RemoveEmptyEntries)
+            .Select(w => w.Trim('.', ',', ';', ':', '!', '?', '¡', '¿', '"', '(', ')', '[', ']', '«', '»', '“', '”'))
+            .Where(w => w.Length > 0)
+            .ToList();
+
+        // Letters that only one of the languages uses settle it
+        if (allowed.Contains("es") && text.IndexOfAny(new[] { 'ñ', 'Ñ', '¿', '¡' }) >= 0) return "es";
+        if (allowed.Contains("ca") && (text.Contains("l·l") || text.IndexOfAny(new[] { 'ò', 'è', 'à' }) >= 0)) return "ca";
+
+        var scores = allowed.ToDictionary(l => l,
+            l => StopWords.TryGetValue(l, out var set) ? words.Count(set.Contains) : 0);
+        var best = scores.OrderByDescending(kv => kv.Value).ToList();
+        if (best.Count > 0 && best[0].Value > 0 && (best.Count == 1 || best[0].Value > best[1].Value))
+            return best[0].Key;
+
+        // Tie or no common words: compare trigram profiles of the allowed languages only
+        var cleaned = new string(text.Where(c => char.IsLetter(c) || char.IsWhiteSpace(c)).ToArray()).ToLowerInvariant();
+        var textProfile = BuildTrigramProfile(cleaned);
+        string winner = allowed[0];
+        double bestScore = double.MaxValue;
+        foreach (var lang in allowed)
+        {
+            var profile = lang == "ca" ? CatalanProfile : _languageProfiles.GetValueOrDefault(lang);
+            if (profile == null) continue;
+            var d = CalculateDistance(textProfile, profile);
+            if (d < bestScore) { bestScore = d; winner = lang; }
+        }
+        return winner;
+    }
+
     private static Dictionary<string, double> BuildTrigramProfile(string text)
     {
         var trigrams = new Dictionary<string, int>();

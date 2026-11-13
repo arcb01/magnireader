@@ -32,6 +32,7 @@ public partial class SettingsWindow : Window
         SetWindowIcon();
         LoadSettings();
         PopulateVoiceGroups();
+        Closed += (_, _) => _downloadCts?.Cancel();
     }
 
     private void SetWindowIcon()
@@ -54,6 +55,8 @@ public partial class SettingsWindow : Window
             if (_themes[i].color.Equals(s.HighlightColor, StringComparison.OrdinalIgnoreCase))
             { ThemeCombo.SelectedIndex = i; break; }
         }
+
+        LoadKokoroSettings(s);
 
         // Vision settings
         VisionProviderCombo.SelectedIndex = s.VisionProvider.Equals("OpenAI", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
@@ -309,6 +312,11 @@ public partial class SettingsWindow : Window
         if (ti >= 0 && ti < _themes.Length) { s.HighlightColor = _themes[ti].color; s.HighlightTextColor = _themes[ti].text; }
         s.VoicePriorities = new Dictionary<string, List<string>>(_workingPriorities);
 
+        // Voice engine
+        s.SpeechEngine = EngineCombo.SelectedIndex == 1 ? "Kokoro" : "Windows";
+        if (KokoroEnglishCombo.SelectedItem is KokoroVoiceInfo en) s.KokoroVoiceEnglish = en.Id;
+        if (KokoroSpanishCombo.SelectedItem is KokoroVoiceInfo es) s.KokoroVoiceSpanish = es.Id;
+
         // Vision settings
         s.VisionProvider = VisionProviderCombo.SelectedIndex == 1 ? "OpenAI" : "Gemini";
         s.VisionApiKey = _apiKeyValue;
@@ -320,6 +328,135 @@ public partial class SettingsWindow : Window
     }
 
     private void Cancel_Click(object sender, RoutedEventArgs e) => Close();
+
+    // ─── Kokoro voice engine ─────────────────────────────────
+
+    private CancellationTokenSource? _downloadCts;
+
+    private void LoadKokoroSettings(AppSettings s)
+    {
+        var voices = KokoroSpeaker.GetVoices();
+        var english = voices.Where(v => v.LangCode == "en").ToList();
+        var spanish = voices.Where(v => v.LangCode == "es").ToList();
+        KokoroEnglishCombo.ItemsSource = english;
+        KokoroSpanishCombo.ItemsSource = spanish;
+        KokoroEnglishCombo.SelectedItem = english.FirstOrDefault(v => v.Id == s.KokoroVoiceEnglish) ?? english.FirstOrDefault();
+        KokoroSpanishCombo.SelectedItem = spanish.FirstOrDefault(v => v.Id == s.KokoroVoiceSpanish) ?? spanish.FirstOrDefault();
+
+        EngineCombo.SelectedIndex = string.Equals(s.SpeechEngine, "Kokoro", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
+        UpdateKokoroPanel();
+    }
+
+    private void EngineCombo_SelectionChanged(object sender, SelectionChangedEventArgs e) => UpdateKokoroPanel();
+
+    private void UpdateKokoroPanel()
+    {
+        if (KokoroPanel == null || EngineCombo == null) return;
+        KokoroPanel.Visibility = EngineCombo.SelectedIndex == 1 ? Visibility.Visible : Visibility.Collapsed;
+
+        if (_downloadCts != null) return; // download in progress owns the status line
+
+        if (KokoroEnglishCombo.Items.Count == 0 && KokoroSpanishCombo.Items.Count == 0)
+        {
+            KokoroStatusText.Text = $"⚠ Kokoro voices not found in {KokoroSpeaker.VoicesDirectory}. Rebuild MagniReader.";
+            KokoroDownloadBtn.Visibility = Visibility.Collapsed;
+        }
+        else if (KokoroSpeaker.IsModelDownloaded)
+        {
+            KokoroStatusText.Text = KokoroSpeaker.Shared.IsLoaded
+                ? "✓ Kokoro model installed and loaded."
+                : "✓ Kokoro model installed. It loads in the background when Kokoro is selected.";
+            KokoroDownloadBtn.Visibility = Visibility.Collapsed;
+        }
+        else
+        {
+            KokoroStatusText.Text =
+                $"The Kokoro model is not installed yet. It is a one-time download of about {KokoroSpeaker.ApproxModelSizeMb} MB, " +
+                "saved in %APPDATA%\\MagniReader\\kokoro. Until then Windows voices are used.";
+            KokoroDownloadBtn.Content = $"⬇ Download Kokoro model (~{KokoroSpeaker.ApproxModelSizeMb} MB)";
+            KokoroDownloadBtn.Visibility = Visibility.Visible;
+        }
+    }
+
+    private async void KokoroDownload_Click(object sender, RoutedEventArgs e)
+    {
+        if (_downloadCts != null)
+        {
+            _downloadCts.Cancel(); // button acts as "Cancel" while downloading
+            return;
+        }
+
+        var cts = _downloadCts = new CancellationTokenSource();
+        KokoroDownloadBtn.Content = "✖ Cancel download";
+        KokoroProgress.Visibility = Visibility.Visible;
+        KokoroProgress.Value = 0;
+        KokoroStatusText.Text = "Downloading the Kokoro model…";
+
+        var progress = new Progress<double>(p =>
+        {
+            KokoroProgress.Value = p;
+            KokoroStatusText.Text = $"Downloading the Kokoro model… {p * 100:F0}%";
+        });
+
+        try
+        {
+            await KokoroSpeaker.DownloadModelAsync(progress, cts.Token);
+            KokoroStatusText.Text = "Loading the Kokoro model…";
+            bool ok = await KokoroSpeaker.Shared.EnsureLoadedAsync();
+            _downloadCts = null;
+            UpdateKokoroPanel();
+            if (!ok)
+                KokoroStatusText.Text = "⚠ The model downloaded but could not be loaded. See the log in %APPDATA%\\MagniReader\\logs.";
+        }
+        catch (OperationCanceledException)
+        {
+            _downloadCts = null;
+            UpdateKokoroPanel();
+            KokoroStatusText.Text = "Download cancelled.";
+        }
+        catch (Exception ex)
+        {
+            CrashLogger.LogError("Kokoro model download failed", ex);
+            _downloadCts = null;
+            UpdateKokoroPanel();
+            KokoroStatusText.Text = $"⚠ Download failed: {ex.Message}";
+        }
+        finally
+        {
+            KokoroProgress.Visibility = Visibility.Collapsed;
+            cts.Dispose();
+        }
+    }
+
+    private void PreviewKokoroEnglish_Click(object sender, RoutedEventArgs e) =>
+        PreviewKokoro(KokoroEnglishCombo.SelectedItem as KokoroVoiceInfo);
+
+    private void PreviewKokoroSpanish_Click(object sender, RoutedEventArgs e) =>
+        PreviewKokoro(KokoroSpanishCombo.SelectedItem as KokoroVoiceInfo);
+
+    private async void PreviewKokoro(KokoroVoiceInfo? voice)
+    {
+        if (voice == null) return;
+        if (!KokoroSpeaker.IsModelDownloaded)
+        {
+            KokoroStatusText.Text = "Download the Kokoro model first to preview its voices.";
+            return;
+        }
+        try
+        {
+            if (!KokoroSpeaker.Shared.IsLoaded) KokoroStatusText.Text = "Loading the Kokoro model…";
+            float speed = RateSlider.Value >= 0 ? 1f + (float)RateSlider.Value * 0.1f : 1f + (float)RateSlider.Value * 0.05f;
+            var preview = KokoroSpeaker.Shared.PreviewAsync(voice.Id, voice.LangCode, speed);
+            await KokoroSpeaker.Shared.EnsureLoadedAsync();
+            UpdateKokoroPanel();
+            await preview;
+        }
+        catch (Exception ex)
+        {
+            CrashLogger.LogError("Kokoro preview failed", ex);
+            KokoroStatusText.Text = $"⚠ Preview failed: {ex.Message}";
+        }
+    }
 
     private static SolidColorBrush Brush(byte r, byte g, byte b) => new(Color.FromRgb(r, g, b));
 

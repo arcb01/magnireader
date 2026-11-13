@@ -1,5 +1,6 @@
 using System.Windows;
 using System.Windows.Automation;
+using System.Windows.Automation.Text;
 
 namespace MagniReader.Core;
 
@@ -18,6 +19,19 @@ public class TextExtractor
     {
         public string Text { get; set; } = string.Empty;
         public Rect BoundingRect { get; set; }
+
+        /// <summary>
+        /// The UI Automation element the text was read from, when the text came
+        /// from a single element. Used to locate individual words on screen.
+        /// Null when the text was combined from several children.
+        /// </summary>
+        public AutomationElement? Source { get; set; }
+
+        /// <summary>
+        /// The document range the text came from (a whole paragraph in a browser or
+        /// document). Lets the word locator search only inside this paragraph.
+        /// </summary>
+        public TextPatternRange? Range { get; set; }
     }
 
     /// <summary>
@@ -29,6 +43,9 @@ public class TextExtractor
         internal AutomationElement? SiblingStartElement { get; set; }
         internal int ClickX { get; set; }
         internal int ClickY { get; set; }
+        /// <summary>Set when reading by paragraphs of a document (browser, Word…).</summary>
+        internal TextPatternRange? ParagraphRange { get; set; }
+        internal AutomationElement? DocumentElement { get; set; }
     }
 
     /// <summary>
@@ -50,6 +67,14 @@ public class TextExtractor
                 $"Type={element.Current.ControlType.ProgrammaticName}");
 
             var ctx = new ExtractionContext { Element = element, ClickX = x, ClickY = y };
+
+            // STEP 0: Inside a web page or document, read the whole paragraph under the
+            // click. Browsers split a paragraph into many UIA elements (text runs, links,
+            // citation marks); reading them one by one restarted the voice and the
+            // language detection for every fragment.
+            var paragraph = TryExtractParagraphAtPoint(element, point, ctx);
+            if (paragraph != null)
+                return (paragraph, ctx);
 
             // STEP 1: Try the exact element
             var result = TryExtractFromElement(element);
@@ -108,6 +133,11 @@ public class TextExtractor
         var elements = new List<TextElement>();
         try
         {
+            if (context.ParagraphRange != null && context.DocumentElement != null)
+            {
+                CollectFollowingParagraphs(context.ParagraphRange, context.DocumentElement, elements, maxCount: 30);
+                return elements;
+            }
             if (context.SiblingStartElement != null)
             {
                 CollectFollowingSiblings(context.SiblingStartElement, elements, maxCount: 10);
@@ -192,6 +222,100 @@ public class TextExtractor
         return elements;
     }
 
+    // ─── Paragraph reading (browsers, documents) ─────────────────
+
+    private const int MaxParagraphChars = 4000;
+
+    /// <summary>
+    /// If the click is inside a document that exposes UIA TextPattern (Chrome, Edge,
+    /// Firefox, Word…), returns the full paragraph under the click, links included.
+    /// Returns null to use the element-by-element extraction instead.
+    /// </summary>
+    private TextElement? TryExtractParagraphAtPoint(AutomationElement element, System.Windows.Point point, ExtractionContext ctx)
+    {
+        try
+        {
+            var doc = FindDocumentAncestor(element);
+            if (doc == null) return null;
+            if (!doc.TryGetCurrentPattern(TextPattern.Pattern, out var obj)) return null;
+            var pattern = (TextPattern)obj;
+
+            var range = pattern.RangeFromPoint(point);
+            range.ExpandToEnclosingUnit(TextUnit.Paragraph);
+            var para = MakeParagraphElement(range, doc);
+            if (para == null) return null;
+
+            ctx.ParagraphRange = range;
+            ctx.DocumentElement = doc;
+            System.Diagnostics.Debug.WriteLine(
+                $"[TextExtractor] Paragraph at click: '{Truncate(para.Text, 60)}' ({para.Text.Length} chars)");
+            return para;
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[TextExtractor] Paragraph extraction failed: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>The element itself or its nearest ancestor that is a Document with TextPattern.</summary>
+    private static AutomationElement? FindDocumentAncestor(AutomationElement element)
+    {
+        var walker = TreeWalker.ControlViewWalker;
+        var current = element;
+        for (int depth = 0; current != null && depth < 25; depth++)
+        {
+            try
+            {
+                if (current == AutomationElement.RootElement) return null;
+                if (current.Current.ControlType == ControlType.Document &&
+                    (bool)current.GetCurrentPropertyValue(AutomationElement.IsTextPatternAvailableProperty))
+                    return current;
+            }
+            catch { return null; }
+            current = walker.GetParent(current);
+        }
+        return null;
+    }
+
+    private static TextElement? MakeParagraphElement(TextPatternRange range, AutomationElement doc)
+    {
+        var raw = range.GetText(MaxParagraphChars + 1);
+        if (string.IsNullOrWhiteSpace(raw) || raw.Length > MaxParagraphChars) return null;
+        var text = CleanText(raw);
+        if (string.IsNullOrWhiteSpace(text) || !IsReadableText(text)) return null;
+
+        Rect rect = Rect.Empty;
+        try
+        {
+            foreach (var r in range.GetBoundingRectangles())
+                if (!r.IsEmpty && r.Width > 0 && r.Height > 0) rect = rect.IsEmpty ? r : Rect.Union(rect, r);
+        }
+        catch { }
+
+        return new TextElement { Text = text.Trim(), BoundingRect = rect, Source = doc, Range = range };
+    }
+
+    /// <summary>Collects the paragraphs after <paramref name="start"/> for continuous reading.</summary>
+    private static void CollectFollowingParagraphs(TextPatternRange start, AutomationElement doc,
+        List<TextElement> elements, int maxCount)
+    {
+        var range = start.Clone();
+        for (int steps = 0; steps < maxCount * 3 && elements.Count < maxCount; steps++)
+        {
+            int moved;
+            try { moved = range.Move(TextUnit.Paragraph, 1); }
+            catch { break; }
+            if (moved == 0) break;
+            try { range.ExpandToEnclosingUnit(TextUnit.Paragraph); } catch { break; }
+
+            var para = MakeParagraphElement(range.Clone(), doc);
+            if (para != null && (elements.Count == 0 || elements[^1].Text != para.Text))
+                elements.Add(para);
+        }
+        System.Diagnostics.Debug.WriteLine($"[TextExtractor] Collected {elements.Count} following paragraph(s)");
+    }
+
     /// <summary>
     /// Collects text from following sibling elements for continuous reading.
     /// </summary>
@@ -241,7 +365,7 @@ public class TextExtractor
         if (!string.IsNullOrWhiteSpace(text) && IsReadableText(text))
         {
             var rect = GetSafeRect(element);
-            return new TextElement { Text = text.Trim(), BoundingRect = rect };
+            return new TextElement { Text = text.Trim(), BoundingRect = rect, Source = element };
         }
         return null;
     }
