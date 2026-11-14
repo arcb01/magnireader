@@ -104,6 +104,7 @@ public partial class PlaybackStripWindow : Window
     /// <summary>Shows the reading speed on the speed button, e.g. 1.5 → "1.5x".</summary>
     public void SetSpeed(double multiplier)
     {
+        multiplier = Math.Round(multiplier * 20) / 20; // nearest 0.05: SAPI's scale isn't linear
         string label = multiplier.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture) + "x";
         SpeedText.Text = label;
         SpeedButton.ToolTip = $"Reading speed {label} (click for the next speed)";
