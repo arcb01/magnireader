@@ -326,6 +326,14 @@ public partial class App : Application
                 _currentReadingText.Length < MinCharsForPlaybackControls && _readingQueue.Count <= 1)
                 return;
             _playbackStripShown = true;
+            // Owned by the overlay, so Windows always keeps it above the dimmed screen
+            // (both are topmost, and the overlay is activated when a reading starts,
+            // which used to put the dim layer over the strip and swallow its clicks).
+            if (_playbackStrip.Owner == null && _overlay!.IsLoaded)
+            {
+                try { _playbackStrip.Owner = _overlay; }
+                catch (InvalidOperationException) { /* overlay not shown yet; z-order fallback below */ }
+            }
             _playbackStrip.SetPaused(_speechEngine?.IsPaused == true);
             _playbackStrip.ShowAt(box);
         };

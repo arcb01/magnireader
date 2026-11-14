@@ -76,6 +76,9 @@ public partial class PlaybackStripWindow : Window
 
         if (!IsVisible) Show();
         BringToFront();
+        // The overlay's activation is processed after this call; raise the strip again
+        // once it has settled, so it never ends up under the dim layer.
+        Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.ApplicationIdle, new Action(BringToFront));
     }
 
     /// <summary>
