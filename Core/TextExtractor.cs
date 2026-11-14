@@ -32,6 +32,15 @@ public class TextExtractor
         /// document). Lets the word locator search only inside this paragraph.
         /// </summary>
         public TextPatternRange? Range { get; set; }
+
+        /// <summary>
+        /// True when the text may not be what's under the click: a label of a big
+        /// container ("Page 1", the document's title), the start of a whole document,
+        /// or the nearest text found next to the click. Word processors and canvas
+        /// apps (Google Docs) give results like these, so the caller tries OCR first
+        /// and only uses this text when OCR finds nothing.
+        /// </summary>
+        public bool Uncertain { get; set; }
     }
 
     /// <summary>
@@ -46,6 +55,12 @@ public class TextExtractor
         /// <summary>Set when reading by paragraphs of a document (browser, Word…).</summary>
         internal TextPatternRange? ParagraphRange { get; set; }
         internal AutomationElement? DocumentElement { get; set; }
+
+        /// <summary>How the text was found ("paragraph", "element", "children", "nearest", "none"). For the log.</summary>
+        public string Method { get; internal set; } = "none";
+
+        /// <summary>The app and element under the click, e.g. "WINWORD Document (_WwG)". For the log.</summary>
+        public string Where { get; internal set; } = "";
     }
 
     /// <summary>
@@ -55,18 +70,19 @@ public class TextExtractor
     /// </summary>
     public (TextElement? firstElement, ExtractionContext? context) ExtractFirstElementAtPoint(int x, int y)
     {
+        var ctx = new ExtractionContext { ClickX = x, ClickY = y };
         try
         {
             var point = new System.Windows.Point(x, y);
             var element = AutomationElement.FromPoint(point);
-            if (element == null) return (null, null);
+            if (element == null) return (null, ctx);
 
+            ctx.Element = element;
+            ctx.Where = DescribeElement(element);
             System.Diagnostics.Debug.WriteLine(
                 $"[TextExtractor] Click at ({x},{y}): " +
                 $"Name='{Truncate(element.Current.Name, 60)}', " +
                 $"Type={element.Current.ControlType.ProgrammaticName}");
-
-            var ctx = new ExtractionContext { Element = element, ClickX = x, ClickY = y };
 
             // STEP 0: Inside a web page or document, read the whole paragraph under the
             // click. Browsers split a paragraph into many UIA elements (text runs, links,
@@ -74,12 +90,16 @@ public class TextExtractor
             // language detection for every fragment.
             var paragraph = TryExtractParagraphAtPoint(element, point, ctx);
             if (paragraph != null)
+            {
+                ctx.Method = "paragraph";
                 return (paragraph, ctx);
+            }
 
             // STEP 1: Try the exact element
             var result = TryExtractFromElement(element);
             if (result != null)
             {
+                ctx.Method = "element";
                 ctx.SiblingStartElement = element;
                 return (result, ctx);
             }
@@ -88,6 +108,9 @@ public class TextExtractor
             var childResult = TryChildren(element, maxChildren: 10, maxDepth: 2);
             if (childResult != null)
             {
+                ctx.Method = "children";
+                // Text of children that aren't under the click (toolbar labels, page numbers…)
+                if (!NearPoint(childResult.BoundingRect, x, y)) childResult.Uncertain = true;
                 ctx.SiblingStartElement = element;
                 return (childResult, ctx);
             }
@@ -96,6 +119,8 @@ public class TextExtractor
             var nearestResult = FindNearestTextElement(element, x, y);
             if (nearestResult != null)
             {
+                ctx.Method = "nearest";
+                if (!NearPoint(nearestResult.BoundingRect, x, y)) nearestResult.Uncertain = true;
                 // Find the matching automation element for later sibling collection
                 var walker = TreeWalker.ControlViewWalker;
                 var parent = walker.GetParent(element);
@@ -121,8 +146,39 @@ public class TextExtractor
             System.Diagnostics.Debug.WriteLine($"[TextExtractor] Error: {ex.Message}");
         }
 
-        return (null, null);
+        return (null, ctx);
     }
+
+    /// <summary>"WINWORD Document (_WwG)": the app and the kind of element, for the log. Never the text.</summary>
+    private static string DescribeElement(AutomationElement element)
+    {
+        try
+        {
+            string process = "";
+            try { process = System.Diagnostics.Process.GetProcessById(element.Current.ProcessId).ProcessName; }
+            catch { }
+            var type = element.Current.ControlType.ProgrammaticName.Replace("ControlType.", "");
+            var cls = element.Current.ClassName;
+            return string.IsNullOrEmpty(cls) ? $"{process} {type}" : $"{process} {type} ({Truncate(cls, 40)})";
+        }
+        catch { return "?"; }
+    }
+
+    /// <summary>
+    /// True when the screen rect contains the point, give or take a few pixels.
+    /// An empty rect can't be checked and counts as false.
+    /// </summary>
+    private static bool NearPoint(Rect rect, int x, int y, double tolerance = 8)
+    {
+        if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0) return false;
+        var r = rect;
+        r.Inflate(tolerance, tolerance);
+        return r.Contains(new System.Windows.Point(x, y));
+    }
+
+    /// <summary>Elements this big are page or window containers, not a piece of text.</summary>
+    private static bool IsLargeContainer(Rect rect) =>
+        !rect.IsEmpty && rect.Width > 500 && rect.Height > 300;
 
     /// <summary>
     /// Collects following siblings from a previous extraction context.
@@ -305,6 +361,11 @@ public class TextExtractor
             var para = MakeParagraphElement(range, doc);
             if (para == null) return null;
 
+            // Apps that draw their text on a canvas (Google Docs) or keep it off screen
+            // for screen readers return a range that isn't where the user clicked.
+            if (!RangeContainsPoint(range, point))
+                para.Uncertain = true;
+
             ctx.ParagraphRange = range;
             ctx.DocumentElement = doc;
             System.Diagnostics.Debug.WriteLine(
@@ -318,7 +379,22 @@ public class TextExtractor
         }
     }
 
-    /// <summary>The element itself or its nearest ancestor that is a Document with TextPattern.</summary>
+    /// <summary>True when one of the range's line rectangles is under the point (a few pixels of slack).</summary>
+    private static bool RangeContainsPoint(TextPatternRange range, System.Windows.Point point)
+    {
+        try
+        {
+            foreach (var r in range.GetBoundingRectangles())
+                if (NearPoint(r, (int)point.X, (int)point.Y, tolerance: 6)) return true;
+        }
+        catch { }
+        return false;
+    }
+
+    /// <summary>
+    /// The element itself or its nearest ancestor that is a document or rich edit
+    /// box with TextPattern (browsers, Word, Notepad, WordPad…).
+    /// </summary>
     private static AutomationElement? FindDocumentAncestor(AutomationElement element)
     {
         var walker = TreeWalker.ControlViewWalker;
@@ -328,7 +404,8 @@ public class TextExtractor
             try
             {
                 if (current == AutomationElement.RootElement) return null;
-                if (current.Current.ControlType == ControlType.Document &&
+                var type = current.Current.ControlType;
+                if ((type == ControlType.Document || type == ControlType.Edit) &&
                     (bool)current.GetCurrentPropertyValue(AutomationElement.IsTextPatternAvailableProperty))
                     return current;
             }
@@ -420,15 +497,21 @@ public class TextExtractor
     /// </summary>
     private TextElement? TryExtractFromElement(AutomationElement element)
     {
-        string? text = GetTextFromElement(element);
+        string? text = GetTextFromElement(element, out var origin);
         text = CleanText(text);
         if (!string.IsNullOrWhiteSpace(text) && IsReadableText(text))
         {
             var rect = GetSafeRect(element);
-            return new TextElement { Text = text.Trim(), BoundingRect = rect, Source = element };
+            // A page-sized element gives either its label ("Page 1", the file name) or,
+            // through TextPattern, its whole text from the top: neither is what was clicked.
+            bool uncertain = IsLargeContainer(rect) &&
+                             (origin == TextOrigin.WholeDocument || (origin == TextOrigin.Name && text.Length < 60));
+            return new TextElement { Text = text.Trim(), BoundingRect = rect, Source = element, Uncertain = uncertain };
         }
         return null;
     }
+
+    private enum TextOrigin { None, WholeDocument, Name, Value }
 
     /// <summary>
     /// Searches children of an element for text.
@@ -575,32 +658,41 @@ public class TextExtractor
     /// Gets text from a single element. Priority: TextPattern → Name → ValuePattern.
     /// Avoids returning bare URLs from ValuePattern (common in browsers).
     /// </summary>
-    private string? GetTextFromElement(AutomationElement element)
+    private string? GetTextFromElement(AutomationElement element) => GetTextFromElement(element, out _);
+
+    private string? GetTextFromElement(AutomationElement element, out TextOrigin origin)
     {
+        origin = TextOrigin.None;
         try
         {
             // TextPattern (documents, browsers) — best source for real content
             if (element.TryGetCurrentPattern(TextPattern.Pattern, out object? textPatternObj))
             {
                 var text = ((TextPattern)textPatternObj).DocumentRange.GetText(10000);
-                if (!string.IsNullOrWhiteSpace(text)) return text;
+                if (!string.IsNullOrWhiteSpace(text)) { origin = TextOrigin.WholeDocument; return text; }
             }
 
             // Name property — usually the visible label/text
             var name = element.Current.Name;
             if (!string.IsNullOrWhiteSpace(name) && !LooksLikeUrl(name))
+            {
+                origin = TextOrigin.Name;
                 return name;
+            }
 
             // ValuePattern (text boxes, links) — skip if it looks like a URL
             if (element.TryGetCurrentPattern(ValuePattern.Pattern, out object? valuePatternObj))
             {
                 var text = ((ValuePattern)valuePatternObj).Current.Value;
                 if (!string.IsNullOrWhiteSpace(text) && !LooksLikeUrl(text))
+                {
+                    origin = TextOrigin.Value;
                     return text;
+                }
             }
 
             // Fall back to Name even if it was skipped
-            if (!string.IsNullOrWhiteSpace(name)) return name;
+            if (!string.IsNullOrWhiteSpace(name)) { origin = TextOrigin.Name; return name; }
         }
         catch { }
 
