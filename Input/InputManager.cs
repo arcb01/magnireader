@@ -41,6 +41,13 @@ public class InputManager : IDisposable
     private volatile bool _isHovering;
     private volatile HotkeySet _hotkeys = new(Hotkey.DefaultRead, Hotkey.DefaultSnip, Hotkey.DefaultReadSelection);
 
+    // The button-up of a click we swallowed is swallowed too (hook thread only).
+    // Letting it through gave the app a release without a press: Word and Google
+    // Docs could treat it as the end of a click or drag and move the caret.
+    private bool _swallowNextUp;
+
+    private const int WM_LBUTTONUP = 0x0202;
+
     // Hover preview throttle (hook thread only)
     private long _lastHoverTicks;
     private const int HoverThrottleMs = 150;
@@ -291,16 +298,28 @@ public class InputManager : IDisposable
                         ArmPickMode(false);
                         ReadTriggered?.Invoke(x, y);
                     });
+                    _swallowNextUp = true;
                     return (IntPtr)1;
                 }
                 else if (readCombo)
                 {
                     Post(() => ReadTriggered?.Invoke(x, y));
+                    _swallowNextUp = true;
                     return (IntPtr)1; // swallow so the app underneath doesn't get the click
                 }
                 else if (_isReading)
                 {
                     Post(() => CancelTriggered?.Invoke());
+                    _swallowNextUp = true;
+                    return (IntPtr)1;
+                }
+                _swallowNextUp = false;
+            }
+            else if (wParam == (IntPtr)WM_LBUTTONUP)
+            {
+                if (_swallowNextUp)
+                {
+                    _swallowNextUp = false;
                     return (IntPtr)1;
                 }
             }

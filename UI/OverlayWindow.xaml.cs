@@ -135,6 +135,7 @@ public partial class OverlayWindow : Window
             return;
 
         var target = ToOverlay(r, pad: 3);
+        if (!(target.Width > 0) || !(target.Height > 0)) return; // off this screen (or NaN)
 
         // Ignore words that are scrolled out of the highlighted element
         if (!_holeRect.IntersectsWith(target)) return;
@@ -233,22 +234,23 @@ public partial class OverlayWindow : Window
     /// </summary>
     private Rect ToOverlay(Rect sourceRect, double pad)
     {
+        if (sourceRect.IsEmpty) return new Rect(0, 0, 0, 0);
+
         var scaled = new Rect(
             sourceRect.X * _dpiScaleX,
             sourceRect.Y * _dpiScaleY,
             sourceRect.Width * _dpiScaleX,
             sourceRect.Height * _dpiScaleY);
 
-        var hole = new Rect(
-            Math.Max(0, scaled.X - Left - pad),
-            Math.Max(0, scaled.Y - Top - pad),
-            Math.Min(_screenW, scaled.Width + pad * 2),
-            Math.Min(_screenH, scaled.Height + pad * 2));
+        // Clamp each edge to the screen. A rect partly or wholly off this screen (text
+        // scrolled away, a word on another monitor) used to give a negative width,
+        // which WPF rejects with an exception that closed the app.
+        double left = Math.Clamp(scaled.X - Left - pad, 0, _screenW);
+        double top = Math.Clamp(scaled.Y - Top - pad, 0, _screenH);
+        double right = Math.Clamp(scaled.X - Left + scaled.Width + pad, 0, _screenW);
+        double bottom = Math.Clamp(scaled.Y - Top + scaled.Height + pad, 0, _screenH);
 
-        if (hole.X + hole.Width > _screenW) hole.Width = _screenW - hole.X;
-        if (hole.Y + hole.Height > _screenH) hole.Height = _screenH - hole.Y;
-
-        return hole;
+        return new Rect(left, top, Math.Max(0, right - left), Math.Max(0, bottom - top));
     }
 
     private void LayoutHighlight(Rect hole)
