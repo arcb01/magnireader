@@ -49,6 +49,9 @@ public partial class SettingsWindow : Window
         var s = _settingsStore.Settings;
         RateSlider.Value = s.SpeechRate;
         VolumeSlider.Value = s.Volume;
+        DuckCheckBox.IsChecked = s.DuckOtherAudio;
+        DuckLevelSlider.Value = Math.Clamp(s.DuckLevel, 0, 80);
+        DuckLevelSlider.IsEnabled = s.DuckOtherAudio;
         OpacitySlider.Value = s.DimOpacity;
         for (int i = 0; i < _themes.Length; i++)
         {
@@ -297,6 +300,12 @@ public partial class SettingsWindow : Window
     private void VolumeSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     { if (VolumeValueText != null) VolumeValueText.Text = $"{(int)e.NewValue}%"; }
 
+    private void DuckCheckBox_Changed(object sender, RoutedEventArgs e)
+    { if (DuckLevelSlider != null) DuckLevelSlider.IsEnabled = DuckCheckBox.IsChecked == true; }
+
+    private void DuckLevelSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    { if (DuckLevelValueText != null) DuckLevelValueText.Text = (int)e.NewValue == 0 ? "muted" : $"{(int)e.NewValue}%"; }
+
     private void OpacitySlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     { if (OpacityValueText != null) OpacityValueText.Text = $"{(int)(e.NewValue * 100)}%"; }
 
@@ -307,6 +316,8 @@ public partial class SettingsWindow : Window
         var s = _settingsStore.Settings;
         s.SpeechRate = (int)RateSlider.Value;
         s.Volume = (int)VolumeSlider.Value;
+        s.DuckOtherAudio = DuckCheckBox.IsChecked == true;
+        s.DuckLevel = (int)DuckLevelSlider.Value;
         s.DimOpacity = OpacitySlider.Value;
         int ti = ThemeCombo.SelectedIndex;
         if (ti >= 0 && ti < _themes.Length) { s.HighlightColor = _themes[ti].color; s.HighlightTextColor = _themes[ti].text; }

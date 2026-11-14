@@ -79,6 +79,9 @@ public class SpeechEngine : IDisposable
 
     public bool IsSpeaking => _isSpeaking;
 
+    /// <summary>Lowers other apps' audio while speaking (see Settings → Speech).</summary>
+    public AudioDucker Ducker { get; } = new();
+
     public SpeechEngine(VoiceManager voiceManager)
     {
         _voiceManager = voiceManager;
@@ -88,6 +91,11 @@ public class SpeechEngine : IDisposable
         try { _synth.Options.IncludeWordBoundaryMetadata = true; }
         catch { /* older Windows: fall back to estimated timings */ }
         InitPersistentMediaPlayer();
+
+        // Whenever speech ends (finished, failed or stopped), bring other apps back up.
+        // The restore waits a moment, so the next paragraph's Duck() cancels it and the
+        // music doesn't bounce up between paragraphs.
+        SpeechCompleted += Ducker.ScheduleRestore;
     }
 
     /// <summary>
@@ -222,6 +230,9 @@ public class SpeechEngine : IDisposable
         var token = _cts.Token;
         var sw = Stopwatch.StartNew();
 
+        // Lower music/videos while we talk (restored on SpeechCompleted / Cancel).
+        Ducker.Duck();
+
         try
         {
             // 0. Kokoro, if selected and it has a voice for this language
@@ -294,6 +305,14 @@ public class SpeechEngine : IDisposable
             Infrastructure.CrashLogger.LogError($"Speech failed for '{text[..Math.Min(50, text.Length)]}...'", ex);
             _isSpeaking = false;
             SpeechCompleted?.Invoke();
+        }
+        finally
+        {
+            // Some routes end without ever starting playback (cancelled while synthesizing,
+            // no voice…), so no SpeechCompleted fires. If nothing is playing and no newer
+            // Speak() has taken over, make sure other apps are not left lowered.
+            if (!_isSpeaking && (_cts == null || _cts.Token == token))
+                Ducker.ScheduleRestore();
         }
     }
 
@@ -466,6 +485,16 @@ public class SpeechEngine : IDisposable
         }
 
         return name.Trim().Length > 0 ? name.Trim() : null;
+    }
+
+    // ─── Background audio ducking ───────────────────────────────
+
+    /// <summary>Applies "Lower other sounds while reading" from Settings.</summary>
+    public void ConfigureDucking(Infrastructure.AppSettings settings)
+    {
+        Ducker.Enabled = settings.DuckOtherAudio;
+        Ducker.Level = Math.Clamp(settings.DuckLevel, 0, 100) / 100f;
+        if (!Ducker.Enabled) Ducker.ScheduleRestore();
     }
 
     // ─── Kokoro ─────────────────────────────────────────────────
@@ -965,6 +994,9 @@ public class SpeechEngine : IDisposable
             _isSpeaking = false;
             SpeechCompleted?.Invoke();
         }
+
+        // Stopped (or replaced by a new Speak, which ducks again right after this).
+        Ducker.ScheduleRestore();
     }
 
     /// <summary>
@@ -1256,6 +1288,8 @@ public class SpeechEngine : IDisposable
         catch { }
 
         try { _kokoro.Dispose(); } catch { }
+
+        Ducker.Dispose(); // puts other apps' volume back right away
 
         _synth = null!;
     }

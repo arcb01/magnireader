@@ -160,6 +160,19 @@
                                         Value="100" TickFrequency="10" IsSnapToTickEnabled="True"
                                         ValueChanged="VolumeSlider_ValueChanged" />
 
+                                <CheckBox x:Name="DuckCheckBox" Content="Lower other sounds while reading"
+                                          Foreground="#CDD6F4" Margin="0,10,0,4"
+                                          Checked="DuckCheckBox_Changed" Unchecked="DuckCheckBox_Changed" />
+                                <TextBlock Foreground="#A6ADC8" FontSize="11" TextWrapping="Wrap" Margin="0,0,0,6"
+                                           Text="Music and videos get quieter while MagniReader speaks and go back to normal when it stops." />
+                                <TextBlock>
+                                    <Run Text="Other sounds while reading: " />
+                                    <Run x:Name="DuckLevelValueText" Text="30%" Foreground="#FFD700" />
+                                </TextBlock>
+                                <Slider x:Name="DuckLevelSlider" Minimum="0" Maximum="80"
+                                        Value="30" TickFrequency="10" IsSnapToTickEnabled="True"
+                                        ValueChanged="DuckLevelSlider_ValueChanged" />
+
                                 <TextBlock Text="VISUAL OVERLAY" FontWeight="Bold" FontSize="11"
                                            Foreground="#F5C2E7" Margin="0,12,0,8" />
 
