@@ -342,6 +342,17 @@ public partial class App : Application
             _inputManager?.ArmPickMode(false);
             StopReading();
         };
+        _playbackStrip.SpeedRequested += () =>
+        {
+            if (!_isReading || _speechEngine == null) return;
+            // Same setting as Settings and the control bar's Slower / Faster; the engine
+            // applies it to the reading in progress, from the word being spoken.
+            var settings = _settingsStore!.Settings;
+            settings.SpeechRate = _speechEngine.NextPresetRate(settings.SpeechRate);
+            _speechEngine.SetRate(settings.SpeechRate);
+            _settingsStore.Save();
+            RefreshControlBar();
+        };
         _speechEngine!.PauseChanged += paused =>
         {
             _playbackStrip?.SetPaused(paused);
@@ -364,8 +375,16 @@ public partial class App : Application
                 catch (InvalidOperationException) { /* overlay not shown yet; z-order fallback below */ }
             }
             _playbackStrip.SetPaused(_speechEngine?.IsPaused == true);
+            RefreshStripSpeed();
             _playbackStrip.ShowAt(box);
         };
+    }
+
+    /// <summary>Shows the speed setting on the strip as the current voice's multiplier.</summary>
+    private void RefreshStripSpeed()
+    {
+        if (_playbackStrip == null || _speechEngine == null || _settingsStore == null) return;
+        _playbackStrip.SetSpeed(_speechEngine.SpeedMultiplier(_settingsStore.Settings.SpeechRate));
     }
 
     private void HidePlaybackStrip()
@@ -415,6 +434,7 @@ public partial class App : Application
 
     private void RefreshControlBar()
     {
+        RefreshStripSpeed();
         if (_controlBar == null || _settingsStore == null) return;
         var s = _settingsStore.Settings;
         _controlBar.SetRate(s.SpeechRate);

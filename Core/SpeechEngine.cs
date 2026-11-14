@@ -54,6 +54,21 @@ public class SpeechEngine : IDisposable
     private int _volume = 100;
     private int _rate;
 
+    // The whole text of the current reading. A live speed change restarts it from the
+    // word being spoken: _charOffset is where the part being spoken now starts, and
+    // _lastWordPos the last word reached, both in positions of _fullText.
+    private string _fullText = string.Empty;
+    private CultureInfo _speakCulture = CultureInfo.CurrentUICulture;
+    private int _charOffset;
+    private volatile int _lastWordPos = -1;
+    // Rate changes are applied a moment after the last click, so stepping through
+    // several speeds restarts the voice once. While paused, on resume.
+    private System.Windows.Threading.DispatcherTimer? _restartTimer;
+    private bool _restartPending;
+    // Set while a speed change restarts the reading: the cancel of the old part must
+    // not count as the text having finished (that would move on to the next paragraph).
+    private bool _restarting;
+
     // Whether each SAPI voice actually produces audio (true) or not (false), checked
     // once per session. NaturalVoiceSAPIAdapter "Online" voices can return EMPTY audio
     // and still report success when the online service is unreachable, so a reading
@@ -241,11 +256,29 @@ public class SpeechEngine : IDisposable
     /// Prefers WinRT path (native OneCore, same as Windows Narrator) for lower latency.
     /// Falls back to SAPI5 for voices without WinRT equivalents.
     /// </summary>
-    public async void Speak(string text, CultureInfo culture)
+    public void Speak(string text, CultureInfo culture)
     {
+        _fullText = CleanForSpeech(text);
+        _speakCulture = culture;
+        _lastWordPos = -1;
+        SpeakFrom(0);
+    }
+
+    /// <summary>
+    /// Speaks <see cref="_fullText"/> from character <paramref name="offset"/> on. Word
+    /// positions are reported in full-text positions, so the highlight stays right.
+    /// Used by <see cref="Speak"/> (offset 0) and by a live speed change, which restarts
+    /// the reading at the word being spoken with the new rate.
+    /// </summary>
+    private async void SpeakFrom(int offset)
+    {
+        CancelRestart();
         if (_isSpeaking) Cancel();
 
-        text = CleanForSpeech(text);
+        offset = Math.Clamp(offset, 0, _fullText.Length);
+        string text = _fullText.Substring(offset);
+        var culture = _speakCulture;
+        _charOffset = offset;
         _currentText = text;
         _route = PlaybackRoute.None;
         SetPausedFlag(false);
@@ -259,7 +292,8 @@ public class SpeechEngine : IDisposable
         try
         {
             // 0. Kokoro, if selected and it has a voice for this language
-            if (_kokoroEnabled) culture = RecheckLanguageForKokoro(text, culture);
+            // (A restart after a speed change keeps the language picked for the whole text.)
+            if (_kokoroEnabled && offset == 0) _speakCulture = culture = RecheckLanguageForKokoro(text, culture);
             if (await TrySpeakViaKokoroAsync(text, culture, token)) return;
             if (token.IsCancellationRequested) return;
 
@@ -608,13 +642,14 @@ public class SpeechEngine : IDisposable
         bool audioStarted = false;
 
         bool spoke;
+        int offset = _charOffset;
         try
         {
             spoke = await _kokoro.SpeakAsync(text, voiceId, KokoroSpeed,
                 onWord: (pos, len) => System.Windows.Application.Current?.Dispatcher.BeginInvoke(() =>
                 {
                     if (_isSpeaking && !token.IsCancellationRequested)
-                        WordReached?.Invoke(pos, len);
+                        RaiseWordReached(offset + pos, len);
                 }),
                 onAudioStarted: estMs =>
                 {
@@ -803,7 +838,9 @@ public class SpeechEngine : IDisposable
     {
         System.Windows.Application.Current?.Dispatcher.BeginInvoke(() =>
         {
-            if (_isSpeaking)
+            // Only while NAudio is playing: a stop from Cancel() can arrive after a new
+            // reading (or a speed-change restart) has started on another route
+            if (_isSpeaking && _route == PlaybackRoute.NAudio)
             {
                 _isSpeaking = false;
                 StopWordTimer();
@@ -822,6 +859,7 @@ public class SpeechEngine : IDisposable
     /// </summary>
     private async Task<Exception?> SpeakViaSapi(string text, MagniVoice bestVoice, CancellationToken token, Stopwatch sw)
     {
+        int sapiOffset = _charOffset;
         _isSpeaking = true;
         SpeechStarted?.Invoke();
 
@@ -914,7 +952,7 @@ public class SpeechEngine : IDisposable
                     System.Windows.Application.Current?.Dispatcher.BeginInvoke(() =>
                     {
                         if (_isSpeaking && !token.IsCancellationRequested)
-                            WordReached?.Invoke(charPos, charLen);
+                            RaiseWordReached(sapiOffset + charPos, charLen);
                     });
                 }
                 catch { /* never let an event handler crash the speech thread */ }
@@ -995,7 +1033,7 @@ public class SpeechEngine : IDisposable
                             System.Windows.Application.Current?.Dispatcher.BeginInvoke(() =>
                             {
                                 if (_isSpeaking && !token.IsCancellationRequested)
-                                    WordReached?.Invoke(seekPos, seekLen);
+                                    RaiseWordReached(sapiOffset + seekPos, seekLen);
                             });
                             continue;
                         }
@@ -1049,6 +1087,13 @@ public class SpeechEngine : IDisposable
     {
         if (!_isSpeaking || paused == _isPaused) return;
         LogTrace($"[Speech] {(paused ? "Pause" : "Resume")} ({_route})");
+
+        // The speed was changed while paused: continue from the same word at the new speed
+        if (!paused && _restartPending)
+        {
+            RestartAtCurrentWord();
+            return;
+        }
 
         switch (_route)
         {
@@ -1246,12 +1291,13 @@ public class SpeechEngine : IDisposable
 
         _route = PlaybackRoute.None;
         _kokoroControl = null;
+        if (!_restarting) CancelRestart();
         SetPausedFlag(false);
 
         if (_isSpeaking)
         {
             _isSpeaking = false;
-            SpeechCompleted?.Invoke();
+            if (!_restarting) SpeechCompleted?.Invoke();
         }
 
         // Stopped (or replaced by a new Speak, which ducks again right after this).
@@ -1306,7 +1352,9 @@ public class SpeechEngine : IDisposable
     /// </summary>
     public void SetRate(int rate)
     {
+        int old = _rate;
         _rate = Math.Clamp(rate, -10, 10);
+        if (_rate != old && _isSpeaking) ScheduleRestart();
         try
         {
             _synth.Options.SpeakingRate = _rate >= 0 ? 1.0 + _rate * 0.2 : 1.0 + _rate * 0.05;
@@ -1316,6 +1364,105 @@ public class SpeechEngine : IDisposable
             System.Diagnostics.Debug.WriteLine($"[Speech] SetRate (WinRT) failed: {ex.Message}");
         }
         // SAPI rate is applied at the start of each SAPI reading.
+    }
+
+    // ─── Live speed change ───────────────────────────────────────
+
+    /// <summary>Speed presets of the reading strip's speed button, in the order it cycles.</summary>
+    public static readonly double[] SpeedPresets = { 1.0, 1.25, 1.5, 2.0, 0.75 };
+
+    private enum RateScale { Kokoro, WinRT, Sapi }
+
+    /// <summary>The voice whose rate scale applies: the one reading now, else the selected one.</summary>
+    private RateScale CurrentScale => _route switch
+    {
+        PlaybackRoute.Kokoro => RateScale.Kokoro,
+        PlaybackRoute.Sapi => RateScale.Sapi,
+        PlaybackRoute.None => _kokoroEnabled ? RateScale.Kokoro : RateScale.WinRT,
+        _ => RateScale.WinRT,
+    };
+
+    private static double Multiplier(RateScale scale, int rate) => scale switch
+    {
+        RateScale.Kokoro => rate >= 0 ? 1 + rate * 0.1 : 1 + rate * 0.05,
+        RateScale.WinRT => rate >= 0 ? 1 + rate * 0.2 : 1 + rate * 0.05,
+        _ => Math.Pow(3.0, rate / 10.0), // SAPI: about 3x at the extremes
+    };
+
+    /// <summary>
+    /// How much faster than normal the settings <paramref name="rate"/> (-10..10) is with
+    /// the current voice, e.g. 1.5 for "1.5x". Each voice type maps the rate differently.
+    /// </summary>
+    public double SpeedMultiplier(int rate) => Multiplier(CurrentScale, Math.Clamp(rate, -10, 10));
+
+    /// <summary>
+    /// The settings rate (-10..10) for the next speed preset after <paramref name="rate"/>
+    /// with the current voice (1x → 1.25x → 1.5x → 2x → 0.75x → 1x). Presets the rate scale
+    /// can't hit exactly use the nearest rate.
+    /// </summary>
+    public int NextPresetRate(int rate)
+    {
+        var scale = CurrentScale;
+        rate = Math.Clamp(rate, -10, 10);
+        double now = Multiplier(scale, rate);
+
+        // Which preset are we on (nearest), then the one after it
+        int at = 0;
+        for (int i = 1; i < SpeedPresets.Length; i++)
+            if (Math.Abs(SpeedPresets[i] - now) < Math.Abs(SpeedPresets[at] - now)) at = i;
+
+        for (int step = 1; step <= SpeedPresets.Length; step++)
+        {
+            double target = SpeedPresets[(at + step) % SpeedPresets.Length];
+            int best = 0;
+            for (int r = -10; r <= 10; r++)
+                if (Math.Abs(Multiplier(scale, r) - target) < Math.Abs(Multiplier(scale, best) - target)) best = r;
+            if (best != rate) return best;
+        }
+        return rate;
+    }
+
+    private void RaiseWordReached(int pos, int len)
+    {
+        _lastWordPos = pos;
+        WordReached?.Invoke(pos, len);
+    }
+
+    /// <summary>
+    /// Restarts the reading at the current word a moment after the last rate change
+    /// (or on resume, when paused). Windows voices and Kokoro both take the rate when
+    /// they synthesize, so a new speed needs the rest of the text spoken again.
+    /// </summary>
+    private void ScheduleRestart()
+    {
+        _restartPending = true;
+        if (_isPaused) return;
+        if (_restartTimer == null)
+        {
+            _restartTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(350) };
+            _restartTimer.Tick += (_, _) =>
+            {
+                _restartTimer!.Stop();
+                if (_restartPending && _isSpeaking && !_isPaused) RestartAtCurrentWord();
+            };
+        }
+        _restartTimer.Stop();
+        _restartTimer.Start();
+    }
+
+    private void CancelRestart()
+    {
+        _restartPending = false;
+        _restartTimer?.Stop();
+    }
+
+    private void RestartAtCurrentWord()
+    {
+        int from = _lastWordPos >= _charOffset ? _lastWordPos : _charOffset;
+        LogTrace($"[Speech] Speed changed: restarting at char {from}/{_fullText.Length} (rate {_rate})");
+        _restarting = true;
+        try { SpeakFrom(from); }
+        finally { _restarting = false; }
     }
 
     /// <summary>
@@ -1497,6 +1644,7 @@ public class SpeechEngine : IDisposable
         if (timings.Count == 0) return;
 
         bool useMediaPlayer = _useMediaPlayerForWordTimer;
+        int offset = _charOffset;
         int currentIndex = -1;
 
         _wordTimer = new System.Threading.Timer(_ =>
@@ -1530,7 +1678,7 @@ public class SpeechEngine : IDisposable
             var (charPos, charLen, _) = timings[index];
             System.Windows.Application.Current?.Dispatcher.BeginInvoke(() =>
             {
-                WordReached?.Invoke(charPos, charLen);
+                if (_isSpeaking) RaiseWordReached(offset + charPos, charLen);
             });
         }, null, 0, 40);
     }

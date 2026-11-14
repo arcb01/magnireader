@@ -60,7 +60,7 @@ Prefer the mouse alone? Press **▶ Read** on the control bar, then click the te
 - **Continuous reading.** Carries on through the following paragraphs and elements instead of stopping after one.
 - **Natural voices, offline.** Built-in [Kokoro](https://github.com/Lyrcaxis/KokoroSharp) neural voices for English and Spanish run locally on your CPU. Every installed Windows voice is available too.
 - **Automatic language detection.** Picks the language of each text and the right voice and accent for it.
-- **Reading controls.** Pause, go back or forward 10 seconds, and stop, from a small strip on top of the text being read.
+- **Reading controls.** Pause, go back or forward 10 seconds, change the speed, and stop, from a small strip on top of the text being read.
 - **Quieter background audio.** Music and videos turn down while MagniReader speaks and come back when it stops.
 - **AI screen descriptions.** Snap any area and get a short summary read aloud, with a detailed description on demand (Gemini or OpenAI).
 - **Control bar.** A compact always-on-top toolbar that never steals focus from the app you're reading.
@@ -75,7 +75,7 @@ Prefer the mouse alone? Press **▶ Read** on the control bar, then click the te
 | Read selected text | Select it, then `Ctrl+Alt+R` |
 | Read without the keyboard | **▶ Read** on the control bar, then click the text |
 | Describe a screen area | `Ctrl+Alt+S`, then drag to select |
-| Pause, back / forward 10 s | Strip on top of the text being read |
+| Pause, back / forward 10 s, speed | Strip on top of the text being read |
 | Stop reading | Left-click anywhere, `Esc`, or **■** on the control bar |
 | Settings | **⚙** on the control bar, or right-click the tray icon |
 | Show the control bar | Double-click the tray icon |
@@ -89,7 +89,7 @@ The read, read-selection and describe shortcuts can be changed in **Settings →
 |---|---|
 | ▶ Read | Click it, then click any text to read it. `Esc` cancels. |
 | ■ Stop | Stops reading. |
-| − Speed + | Reading speed, -10 to +10. |
+| − Speed + | Reading speed, -10 to +10. Takes effect right away, also mid-reading. |
 | Windows / Kokoro | Switches the voice engine. Kokoro needs its model downloaded first. |
 | 📷 | Describes a screen area with AI. |
 | ⚙ | Opens Settings. |
@@ -100,10 +100,11 @@ Drag the bar by its label. It remembers where you put it and whether it was hidd
 
 ### Reading controls
 
-While a text is being read, a small strip sits on top of the highlighted box: **⏪ 10**, **⏸ / ▶**, **10 ⏩** and **■**. Clicking it doesn't interrupt the reading or take focus from your app. Very short texts, like a button or a heading, don't get the strip.
+While a text is being read, a small strip sits on top of the highlighted box: **⏪ 10**, **⏸ / ▶**, **10 ⏩**, a speed button (**1x**) and **■**. Clicking it doesn't interrupt the reading or take focus from your app. Very short texts, like a button or a heading, don't get the strip.
 
 - Back stops at the start of the current paragraph. Forward past its end moves on to the next one.
 - Kokoro and standard Windows voices jump exactly 10 seconds. SAPI voices (such as Natural voices through NaturalVoiceSAPIAdapter) restart at the word estimated to be 10 seconds away.
+- The speed button steps through 1x → 1.25x → 1.5x → 2x → 0.75x. The new speed applies right away: the voice picks up again from the word it was saying. It is the same setting as Settings and the control bar's − Speed +, so it is remembered. Each voice type maps the speed setting a little differently, so the button shows the nearest speed it can do (for example 1.2x instead of 1.25x on standard Windows voices).
 - Background audio comes back up while paused.
 
 ## Voices
@@ -242,7 +243,7 @@ magnireader/
 ├── UI/
 │   ├── ControlBarWindow.xaml     # Always-on-top control bar
 │   ├── OverlayWindow.xaml        # Dimmed overlay + text and word highlight
-│   ├── PlaybackStripWindow.xaml  # Pause / back / forward / stop strip
+│   ├── PlaybackStripWindow.xaml  # Pause / back / forward / speed / stop strip
 │   ├── HoverHighlightWindow.xaml # Highlights the element under the cursor
 │   ├── SnipWindow.xaml           # Screen area selection
 │   ├── VisionResultWindow.xaml   # AI description display
