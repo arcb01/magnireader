@@ -271,11 +271,12 @@ public partial class App : Application
 
         var aboutItem = new System.Windows.Controls.MenuItem { Header = "ℹ About MagniReader" };
         aboutItem.Click += (s, e) => MessageBox.Show(
-            $"MagniReader v{_updateService?.CurrentVersion}\n\n" +
+            $"MagniReader — {SettingsWindow.DescribeVersion(_updateService)}\n\n" +
             "An intelligent screen reader that reads text aloud\n" +
             "with automatic language detection.\n\n" +
             "How to use:\n" +
-            "• Ctrl+Alt+Click — Read text at cursor\n" +
+            $"• {(_settingsStore?.Settings.ReadHotkey ?? "Ctrl+Alt").Replace("+", " + ")} + Click — Read text at cursor\n" +
+            $"• {(_settingsStore?.Settings.SnipHotkey ?? "Ctrl+Alt+S").Replace("+", " + ")} — Describe a screen area\n" +
             "• Controls above the box — Pause, back/forward 10 s\n" +
             "• Left Click or Esc — Stop reading\n\n" +
             "Built with ❤ using Windows UI Automation.",

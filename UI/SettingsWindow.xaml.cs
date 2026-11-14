@@ -521,19 +521,22 @@ public partial class SettingsWindow : Window
     /// </summary>
     private void ShowVersion()
     {
+        VersionText.Text = DescribeVersion(_updateService);
         if (_updateService.IsInstalled)
-        {
-            var v = _updateService.CurrentVersion;
-            VersionText.Text = $"Version {v}";
-            ReleaseNotesLink.NavigateUri = new Uri($"{UpdateService.RepoUrl}/releases/tag/v{v}");
-            return;
-        }
+            ReleaseNotesLink.NavigateUri = new Uri($"{UpdateService.RepoUrl}/releases/tag/v{_updateService.CurrentVersion}");
+    }
+
+    /// <summary>"Version 1.2.0" for an installed release, "Development build abc1234 (…)" otherwise.</summary>
+    public static string DescribeVersion(UpdateService? updates)
+    {
+        if (updates?.IsInstalled == true)
+            return $"Version {updates.CurrentVersion}";
 
         var info = Assembly.GetExecutingAssembly()
             .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
         var parts = info?.Split('+', 2);
         var commit = parts is { Length: 2 } ? parts[1] : null;
-        VersionText.Text = string.IsNullOrEmpty(commit)
+        return string.IsNullOrEmpty(commit)
             ? "Development build (not installed from a release)"
             : $"Development build {commit[..Math.Min(7, commit.Length)]} (not installed from a release)";
     }

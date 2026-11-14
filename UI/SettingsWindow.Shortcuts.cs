@@ -36,8 +36,14 @@ public partial class SettingsWindow
     /// <summary>
     /// True while the user is typing a new shortcut, so the app doesn't act on the
     /// current shortcut (e.g. open the snipping tool) while it is being replaced.
+    /// Read from the keyboard hook thread, hence volatile.
     /// </summary>
-    public static bool IsRecordingShortcut { get; private set; }
+    public static bool IsRecordingShortcut
+    {
+        get => _isRecordingShortcut;
+        private set => _isRecordingShortcut = value;
+    }
+    private static volatile bool _isRecordingShortcut;
 
     private readonly Dictionary<string, string> _hotkeys = new();
     private Button? _recordingButton;
