@@ -117,6 +117,7 @@ public sealed class AudioDucker : IDisposable
     private void DuckCore(float level)
     {
         var sw = Stopwatch.StartNew();
+        int before = _ducked.Count;
         using var enumerator = new MMDeviceEnumerator();
         foreach (var device in enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active))
         {
@@ -159,8 +160,11 @@ public sealed class AudioDucker : IDisposable
             }
         }
         SaveState();
-        if (_ducked.Count > 0)
-            Debug.WriteLine($"[Ducker] Lowered {_ducked.Count} session(s) in {sw.ElapsedMilliseconds}ms");
+        int added = _ducked.Count - before;
+        if (added > 0)
+            Infrastructure.CrashLogger.LogInfo(
+                $"[Ducker] Lowered {added} app(s) to {level:P0} in {sw.ElapsedMilliseconds}ms: " +
+                string.Join(", ", _ducked.Skip(before).Select(d => ProcessName(d.ProcessId))));
     }
 
     private void RestoreCore()
@@ -201,6 +205,12 @@ public sealed class AudioDucker : IDisposable
             }
         }
         DeleteState();
+    }
+
+    private static string ProcessName(int pid)
+    {
+        try { using var p = Process.GetProcessById(pid); return p.ProcessName; }
+        catch { return pid.ToString(); }
     }
 
     private void SaveState()

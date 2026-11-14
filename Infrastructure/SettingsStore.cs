@@ -64,13 +64,14 @@ public class AppSettings
     /// <summary>Speech rate: -10 to 10. Default: 1 (slightly faster than normal).</summary>
     public int SpeechRate { get; set; } = 1;
 
-    /// <summary>Speech volume: 0 to 100.</summary>
+    /// <summary>Speech volume: 0 to 200 (above 100 boosts Kokoro voices; Windows voices top out at 100).</summary>
     public int Volume { get; set; } = 100;
 
     /// <summary>Lower other apps' audio (music, videos) while MagniReader is speaking.</summary>
     public bool DuckOtherAudio { get; set; } = true;
 
-    /// <summary>Volume other apps are lowered to while speaking, in % of their normal volume (0–100).</summary>
+    /// <summary>Volume other apps are lowered to while speaking, in % of their normal volume (0–100).
+    /// Settings shows this inverted, as "Lower other sounds by" (100 − DuckLevel).</summary>
     public int DuckLevel { get; set; } = 30;
 
     /// <summary>Overlay dim opacity: 0.0 to 1.0. Default: 0.6 (60%).</summary>

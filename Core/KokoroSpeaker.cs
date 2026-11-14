@@ -67,7 +67,7 @@ public sealed class KokoroSpeaker : IDisposable
     private readonly ConcurrentDictionary<string, KokoroVoice> _voiceCache = new(StringComparer.OrdinalIgnoreCase);
     private CancellationTokenSource? _previewCts;
 
-    /// <summary>Volume 0..1, applied live to whatever is playing.</summary>
+    /// <summary>Volume 0..2 (1 = as synthesized, above 1 = boosted), applied live to whatever is playing.</summary>
     public float Volume { get; set; } = 1f;
 
     public bool IsLoaded => _model != null;
@@ -689,6 +689,19 @@ public sealed class KokoroSpeaker : IDisposable
         private long _seekOutMark = -1;
         private long _seekTarget;
 
+        /// <summary>Highest gain the volume setting can ask for (200%).</summary>
+        public const float MaxGain = 2f;
+
+        /// <summary>Linear up to ±0.8, then bends smoothly towards ±1 instead of clipping.</summary>
+        private static float SoftLimit(float x)
+        {
+            const float knee = 0.8f;
+            float a = Math.Abs(x);
+            if (a <= knee) return x;
+            float y = knee + (1f - knee) * MathF.Tanh((a - knee) / (1f - knee));
+            return x < 0 ? -y : y;
+        }
+
         public SeekableSampleProvider(int sampleRate, Func<float> volume)
         {
             WaveFormat = WaveFormat.CreateIeeeFloatWaveFormat(sampleRate, 1);
@@ -777,14 +790,23 @@ public sealed class KokoroSpeaker : IDisposable
 
         public int Read(float[] buffer, int offset, int count)
         {
-            float vol = Math.Clamp(_volume(), 0f, 1f);
+            float vol = Math.Clamp(_volume(), 0f, MaxGain);
             lock (_lock)
             {
                 int n = (int)Math.Min(count, _length - _cursor);
                 if (n > 0)
                 {
-                    for (int i = 0; i < n; i++)
-                        buffer[offset + i] = _buffer[_cursor + i] * vol;
+                    if (vol <= 1f)
+                    {
+                        for (int i = 0; i < n; i++)
+                            buffer[offset + i] = _buffer[_cursor + i] * vol;
+                    }
+                    else
+                    {
+                        // Boosted: soft-limit the peaks so loud syllables don't crackle.
+                        for (int i = 0; i < n; i++)
+                            buffer[offset + i] = SoftLimit(_buffer[_cursor + i] * vol);
+                    }
                     AddSegment(_cursor, n, silence: false);
                     _cursor += n;
                 }
