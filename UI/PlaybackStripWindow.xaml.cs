@@ -5,7 +5,7 @@ using MagniReader.Helpers;
 namespace MagniReader.UI;
 
 /// <summary>
-/// Small strip of playback controls (back 10 s, pause/play, forward 10 s, stop) that
+/// Small strip of playback controls (back 10 s, pause/play, forward 10 s, speed, stop) that
 /// floats just above the box of the text being read.
 ///
 /// Like the control bar it never takes focus (WS_EX_NOACTIVATE), so the reading and the
@@ -19,6 +19,7 @@ public partial class PlaybackStripWindow : Window
     public event Action? PlayPauseRequested;
     public event Action<double>? SkipRequested;   // seconds, negative = back
     public event Action? StopRequested;
+    public event Action? SpeedRequested;          // next speed preset
 
     public const double SkipSeconds = 10;
 
@@ -100,6 +101,15 @@ public partial class PlaybackStripWindow : Window
         PlayPauseButton.ToolTip = paused ? "Continue reading" : "Pause";
     }
 
+    /// <summary>Shows the reading speed on the speed button, e.g. 1.5 → "1.5x".</summary>
+    public void SetSpeed(double multiplier)
+    {
+        multiplier = Math.Round(multiplier * 20) / 20; // nearest 0.05: SAPI's scale isn't linear
+        string label = multiplier.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture) + "x";
+        SpeedText.Text = label;
+        SpeedButton.ToolTip = $"Reading speed {label} (click for the next speed)";
+    }
+
     /// <summary>
     /// True when the physical-pixel screen point (from the low-level mouse hook) is on
     /// the visible strip.
@@ -117,4 +127,5 @@ public partial class PlaybackStripWindow : Window
     private void RewindButton_Click(object sender, RoutedEventArgs e) => SkipRequested?.Invoke(-SkipSeconds);
     private void ForwardButton_Click(object sender, RoutedEventArgs e) => SkipRequested?.Invoke(SkipSeconds);
     private void StopButton_Click(object sender, RoutedEventArgs e) => StopRequested?.Invoke();
+    private void SpeedButton_Click(object sender, RoutedEventArgs e) => SpeedRequested?.Invoke();
 }
