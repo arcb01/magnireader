@@ -73,6 +73,8 @@
                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                     <TextBlock Text="&#xE76F;" FontFamily="{StaticResource IconFont}" FontSize="12"
                                Foreground="#6C7086" VerticalAlignment="Center" Margin="0,0,6,0" />
+                    <Image Source="/assets/magnireader.png" Width="18" Height="18" Margin="0,0,6,0"
+                           RenderOptions.BitmapScalingMode="HighQuality" VerticalAlignment="Center" />
                     <TextBlock Text="MagniReader" FontSize="12" FontWeight="SemiBold"
                                Foreground="#FFD700" VerticalAlignment="Center" />
                 </StackPanel>

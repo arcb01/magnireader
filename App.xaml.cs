@@ -237,6 +237,10 @@ public partial class App : Application
         }
     }
 
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern int GetSystemMetrics(int index);
+    private const int SM_CXSMICON = 49, SM_CYSMICON = 50;
+
     private void SetupTrayIcon()
     {
         // Load tray icon from embedded resource
@@ -245,7 +249,11 @@ public partial class App : Application
         Icon? trayIcon = null;
         if (System.IO.File.Exists(iconPath))
         {
-            trayIcon = new Icon(iconPath);
+            // Ask for the small-icon size (16 px at 100 %, larger at higher DPI) so Windows
+            // uses the hand-tuned small frame of app.ico instead of shrinking the 32 px one.
+            int w = GetSystemMetrics(SM_CXSMICON);
+            int h = GetSystemMetrics(SM_CYSMICON);
+            trayIcon = w > 0 && h > 0 ? new Icon(iconPath, w, h) : new Icon(iconPath);
         }
 
         _trayIcon = new TaskbarIcon
@@ -283,11 +291,12 @@ public partial class App : Application
 
         var aboutItem = new System.Windows.Controls.MenuItem { Header = "ℹ About MagniReader" };
         aboutItem.Click += (s, e) => MessageBox.Show(
-            $"MagniReader v{_updateService?.CurrentVersion}\n\n" +
+            $"MagniReader — {SettingsWindow.DescribeVersion(_updateService)}\n\n" +
             "An intelligent screen reader that reads text aloud\n" +
             "with automatic language detection.\n\n" +
             "How to use:\n" +
-            "• Ctrl+Alt+Click — Read text at cursor\n" +
+            $"• {(_settingsStore?.Settings.ReadHotkey ?? "Ctrl+Alt").Replace("+", " + ")} + Click — Read text at cursor\n" +
+            $"• {(_settingsStore?.Settings.SnipHotkey ?? "Ctrl+Alt+S").Replace("+", " + ")} — Describe a screen area\n" +
             "• Controls above the box — Pause, back/forward 10 s\n" +
             "• Left Click or Esc — Stop reading\n\n" +
             "Built with ❤ using Windows UI Automation.",
@@ -1066,6 +1075,8 @@ public partial class App : Application
     private async void OnSnipTriggered()
     {
         if (_isReading || _isSnipping) return;
+        // The user is typing a new shortcut in Settings, not asking for a snip.
+        if (SettingsWindow.IsRecordingShortcut) return;
 
         try
         {

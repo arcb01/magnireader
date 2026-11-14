@@ -138,6 +138,18 @@ public class AppSettings
     /// <summary>Kokoro voice used for Spanish text (e.g. "ef_dora").</summary>
     public string KokoroVoiceSpanish { get; set; } = "ef_dora";
 
+    // ─── Shortcuts ───────────────────────────────────────────────
+    // Text form: modifiers in the order Ctrl, Alt, Shift, Win, then one key (A–Z, 0–9, F1–F12).
+
+    /// <summary>Keys held while clicking to read the text under the cursor (modifiers only).</summary>
+    public string ReadHotkey { get; set; } = "Ctrl+Alt";
+
+    /// <summary>Opens the snipping overlay to describe a screen area.</summary>
+    public string SnipHotkey { get; set; } = "Ctrl+Alt+S";
+
+    /// <summary>Reads the text currently selected in any app.</summary>
+    public string ReadSelectionHotkey { get; set; } = "Ctrl+Alt+R";
+
     // ─── Vision / Screenshot Analysis ────────────────────────────
 
     /// <summary>Vision API provider: "Gemini" or "OpenAI".</summary>
