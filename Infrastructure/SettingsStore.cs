@@ -88,6 +88,13 @@ public class AppSettings
     /// <summary>Whether to highlight word-by-word or sentence-by-sentence.</summary>
     public bool WordByWordHighlight { get; set; } = true;
 
+    /// <summary>Show the compact control bar (hidden when the user sends it to the tray).</summary>
+    public bool ShowControlBar { get; set; } = true;
+
+    /// <summary>Last control bar position (WPF units). Null = top center of the primary screen.</summary>
+    public double? ControlBarLeft { get; set; }
+    public double? ControlBarTop { get; set; }
+
     /// <summary>Whether to launch on Windows startup.</summary>
     public bool LaunchOnStartup { get; set; } = false;
 
