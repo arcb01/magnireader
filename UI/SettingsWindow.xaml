@@ -156,7 +156,7 @@
                                     <Run Text="Volume: " />
                                     <Run x:Name="VolumeValueText" Text="100%" Foreground="#FFD700" />
                                 </TextBlock>
-                                <Slider x:Name="VolumeSlider" Minimum="0" Maximum="100"
+                                <Slider x:Name="VolumeSlider" Minimum="0" Maximum="200"
                                         Value="100" TickFrequency="10" IsSnapToTickEnabled="True"
                                         ValueChanged="VolumeSlider_ValueChanged" />
 
@@ -166,11 +166,11 @@
                                 <TextBlock Foreground="#A6ADC8" FontSize="11" TextWrapping="Wrap" Margin="0,0,0,6"
                                            Text="Music and videos get quieter while MagniReader speaks and go back to normal when it stops." />
                                 <TextBlock>
-                                    <Run Text="Other sounds while reading: " />
-                                    <Run x:Name="DuckLevelValueText" Text="30%" Foreground="#FFD700" />
+                                    <Run Text="Lower other sounds by: " />
+                                    <Run x:Name="DuckLevelValueText" Text="70%" Foreground="#FFD700" />
                                 </TextBlock>
-                                <Slider x:Name="DuckLevelSlider" Minimum="0" Maximum="80"
-                                        Value="30" TickFrequency="10" IsSnapToTickEnabled="True"
+                                <Slider x:Name="DuckLevelSlider" Minimum="20" Maximum="100"
+                                        Value="70" TickFrequency="10" IsSnapToTickEnabled="True"
                                         ValueChanged="DuckLevelSlider_ValueChanged" />
 
                                 <TextBlock Text="VISUAL OVERLAY" FontWeight="Bold" FontSize="11"

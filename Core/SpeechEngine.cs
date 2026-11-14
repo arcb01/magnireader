@@ -50,7 +50,7 @@ public class SpeechEngine : IDisposable
     private System.Threading.Timer? _wordTimer;
     private bool _useMediaPlayerForWordTimer; // tracks which player is active
 
-    // Volume (0-100) and rate (-10..10, SAPI scale)
+    // Volume (0-200) and rate (-10..10, SAPI scale)
     private int _volume = 100;
     private int _rate;
 
@@ -125,7 +125,7 @@ public class SpeechEngine : IDisposable
     private void InitPersistentMediaPlayer()
     {
         _mediaPlayer = new MediaPlayer();
-        _mediaPlayer.Volume = _volume / 100.0;
+        _mediaPlayer.Volume = SystemVoiceVolume;
 
         _mediaPlayer.MediaEnded += (s, e) =>
         {
@@ -712,7 +712,7 @@ public class SpeechEngine : IDisposable
 
         var source = MediaSource.CreateFromStream(stream, stream.ContentType);
         _mediaPlayer.Source = source;
-        _mediaPlayer.Volume = _volume / 100.0;
+        _mediaPlayer.Volume = SystemVoiceVolume;
 
         if (token.IsCancellationRequested) return;
 
@@ -783,7 +783,7 @@ public class SpeechEngine : IDisposable
             _waveOut.Stop();
         }
 
-        _waveOut.Volume = _volume / 100f;
+        _waveOut.Volume = (float)SystemVoiceVolume;
         _waveOut.Init(_currentReader);
 
         if (token.IsCancellationRequested) return;
@@ -1319,16 +1319,24 @@ public class SpeechEngine : IDisposable
         // SAPI rate is applied at the start of each SAPI reading.
     }
 
+    /// <summary>
+    /// Speech volume, 0–200%. Kokoro can be boosted above 100% (its samples are amplified
+    /// with a soft limiter). Windows voices can't go above their own full volume, so for
+    /// them anything over 100% plays at 100%.
+    /// </summary>
     public void SetVolume(int volume)
     {
-        _volume = volume;
-        _kokoro.Volume = Math.Clamp(volume, 0, 100) / 100f;
+        _volume = Math.Clamp(volume, 0, 200);
+        _kokoro.Volume = _volume / 100f;
         // SAPI volume is applied at the start of each SAPI reading.
         if (_waveOut != null)
-            _waveOut.Volume = volume / 100f;
+            _waveOut.Volume = (float)SystemVoiceVolume;
         if (_mediaPlayer != null)
-            _mediaPlayer.Volume = volume / 100.0;
+            _mediaPlayer.Volume = SystemVoiceVolume;
     }
+
+    /// <summary>Volume for Windows voices (MediaPlayer / NAudio), 0.0–1.0.</summary>
+    private double SystemVoiceVolume => Math.Clamp(_volume, 0, 100) / 100.0;
 
     // ─── Word Timing ────────────────────────────────────────────
 
