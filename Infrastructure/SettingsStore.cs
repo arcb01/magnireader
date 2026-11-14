@@ -140,6 +140,8 @@ public class AppSettings
 
     // ─── Shortcuts ───────────────────────────────────────────────
     // Text form: modifiers in the order Ctrl, Alt, Shift, Win, then one key (A–Z, 0–9, F1–F12).
+    // Parsed by Input/Hotkey.cs. On keyboards with AltGr, "Alt" means the left Alt key
+    // only, so typing @ # € with AltGr never triggers MagniReader.
 
     /// <summary>Keys held while clicking to read the text under the cursor (modifiers only).</summary>
     public string ReadHotkey { get; set; } = "Ctrl+Alt";
@@ -175,20 +177,6 @@ public class AppSettings
     /// the first upload; turning it off again makes MagniReader ask on the next snip.
     /// </summary>
     public bool VisionUploadConsent { get; set; } = false;
-
-    // ─── Shortcuts ───────────────────────────────────────────────
-    // Format "Mod+Mod+Key" with modifiers Ctrl, Alt, Shift, Win (see Input/Hotkey.cs).
-    // On keyboards with AltGr, "Alt" means the left Alt key only, so typing @ # € with
-    // AltGr never triggers MagniReader.
-
-    /// <summary>Modifiers held while left-clicking text to read it (no key). Default "Ctrl+Alt".</summary>
-    public string ReadHotkey { get; set; } = "Ctrl+Alt";
-
-    /// <summary>Opens the snipping tool for the vision feature.</summary>
-    public string SnipHotkey { get; set; } = "Ctrl+Alt+S";
-
-    /// <summary>Reads the selected text, or the clipboard when nothing is selected.</summary>
-    public string ReadSelectionHotkey { get; set; } = "Ctrl+Alt+R";
 
     // ─── Diagnostics ─────────────────────────────────────────────
 

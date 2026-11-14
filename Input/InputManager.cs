@@ -363,7 +363,7 @@ public class InputManager : IDisposable
                     if (_pickArmed) Post(() => ArmPickMode(false));
                     if (_isReading) Post(() => CancelTriggered?.Invoke());
                 }
-                else
+                else if (!UI.SettingsWindow.IsRecordingShortcut) // let the shortcut recorder see the keys
                 {
                     var mods = CurrentModifiers();
                     var hk = _hotkeys;
