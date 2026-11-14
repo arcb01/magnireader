@@ -217,6 +217,10 @@ public partial class App : Application
         }
     }
 
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern int GetSystemMetrics(int index);
+    private const int SM_CXSMICON = 49, SM_CYSMICON = 50;
+
     private void SetupTrayIcon()
     {
         // Load tray icon from embedded resource
@@ -225,7 +229,11 @@ public partial class App : Application
         Icon? trayIcon = null;
         if (System.IO.File.Exists(iconPath))
         {
-            trayIcon = new Icon(iconPath);
+            // Ask for the small-icon size (16 px at 100 %, larger at higher DPI) so Windows
+            // uses the hand-tuned small frame of app.ico instead of shrinking the 32 px one.
+            int w = GetSystemMetrics(SM_CXSMICON);
+            int h = GetSystemMetrics(SM_CYSMICON);
+            trayIcon = w > 0 && h > 0 ? new Icon(iconPath, w, h) : new Icon(iconPath);
         }
 
         _trayIcon = new TaskbarIcon
@@ -886,6 +894,8 @@ public partial class App : Application
     private async void OnSnipTriggered()
     {
         if (_isReading || _isSnipping) return;
+        // The user is typing a new shortcut in Settings, not asking for a snip.
+        if (SettingsWindow.IsRecordingShortcut) return;
 
         try
         {

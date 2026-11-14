@@ -1,5 +1,7 @@
+using System.Reflection;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using MagniReader.Core;
@@ -35,7 +37,11 @@ public partial class SettingsWindow : Window
         SetWindowIcon();
         LoadSettings();
         PopulateVoiceGroups();
-        Closed += (_, _) => _downloadCts?.Cancel();
+        Closed += (_, _) =>
+        {
+            _downloadCts?.Cancel();
+            IsRecordingShortcut = false;
+        };
     }
 
     private void SetWindowIcon()
@@ -65,6 +71,7 @@ public partial class SettingsWindow : Window
 
         LoadKokoroSettings(s);
         LoadAppSettings(s);
+        LoadHotkeys(s);
 
         // Vision settings
         VisionProviderCombo.SelectedIndex = s.VisionProvider.Equals("OpenAI", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
@@ -142,7 +149,6 @@ public partial class SettingsWindow : Window
                 "Settings → Accessibility → Narrator → Add natural voices\n" +
                 "Then install NaturalVoiceSAPIAdapter to use them here.";
         }
-        EnableOneCoreBtn.Visibility = Visibility.Collapsed;
     }
 
     private void BuildVoiceList(StackPanel listPanel, string langCode, IList<MagniVoice> voices)
@@ -264,8 +270,8 @@ public partial class SettingsWindow : Window
     {
         Content = text,
         ToolTip = string.IsNullOrEmpty(tip) ? null : tip,
-        Width = 28, Height = 28,
-        Background = Brushes.Transparent, BorderThickness = new Thickness(0),
+        Width = 28, Height = 28, Padding = new Thickness(0),
+        Background = Brushes.Transparent,
         Foreground = Brush(0xA6, 0xAD, 0xC8), FontSize = 12,
         Cursor = System.Windows.Input.Cursors.Hand,
         Margin = new Thickness(2, 0, 2, 0),
@@ -297,8 +303,6 @@ public partial class SettingsWindow : Window
         }
     }
 
-    private void EnableOneCoreVoices_Click(object sender, RoutedEventArgs e) { }
-
     private void RateSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     { if (RateValueText != null) RateValueText.Text = ((int)e.NewValue).ToString(); }
 
@@ -314,10 +318,9 @@ public partial class SettingsWindow : Window
     private void OpacitySlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     { if (OpacityValueText != null) OpacityValueText.Text = $"{(int)(e.NewValue * 100)}%"; }
 
-    private void ThemeCombo_SelectionChanged(object sender, SelectionChangedEventArgs e) { }
-
     private void Save_Click(object sender, RoutedEventArgs e)
     {
+        StopRecording();
         var s = _settingsStore.Settings;
         s.SpeechRate = (int)RateSlider.Value;
         s.Volume = (int)VolumeSlider.Value;
@@ -341,6 +344,11 @@ public partial class SettingsWindow : Window
         s.LaunchOnStartup = LaunchOnStartupCheckBox.IsChecked == true;
         s.AutoCheckUpdates = AutoUpdateCheckBox.IsChecked == true;
         StartupManager.Set(s.LaunchOnStartup);
+
+        // Shortcuts
+        s.ReadHotkey = _hotkeys[ReadId];
+        s.ReadSelectionHotkey = _hotkeys[SelectionId];
+        s.SnipHotkey = _hotkeys[SnipId];
 
         _settingsStore.Save();
         _onSettingsSaved(s);
@@ -373,7 +381,11 @@ public partial class SettingsWindow : Window
     private void UpdateKokoroPanel()
     {
         if (KokoroPanel == null || EngineCombo == null) return;
-        KokoroPanel.Visibility = EngineCombo.SelectedIndex == 1 ? Visibility.Visible : Visibility.Collapsed;
+        bool kokoro = EngineCombo.SelectedIndex == 1;
+        KokoroPanel.Visibility = kokoro ? Visibility.Visible : Visibility.Collapsed;
+        // The Windows voice ranking only matters when Windows voices do the reading.
+        if (WindowsVoicesPanel != null)
+            WindowsVoicesPanel.Visibility = kokoro ? Visibility.Collapsed : Visibility.Visible;
 
         if (_downloadCts != null) return; // download in progress owns the status line
 
@@ -488,7 +500,7 @@ public partial class SettingsWindow : Window
         // The registry is the truth: the user may have turned it off in Task Manager → Startup apps.
         LaunchOnStartupCheckBox.IsChecked = s.LaunchOnStartup && StartupManager.IsEnabled;
         AutoUpdateCheckBox.IsChecked = s.AutoCheckUpdates;
-        VersionText.Text = $"MagniReader {_updateService.CurrentVersion}";
+        ShowVersion();
 
         if (!_updateService.IsInstalled)
         {
@@ -500,6 +512,30 @@ public partial class SettingsWindow : Window
         {
             ShowUpdateReady(pending);
         }
+    }
+
+    /// <summary>
+    /// The installed app shows the release it was installed from (Velopack knows it).
+    /// A build run from source has no release behind it, so it says so instead of
+    /// showing a made-up "1.0".
+    /// </summary>
+    private void ShowVersion()
+    {
+        if (_updateService.IsInstalled)
+        {
+            var v = _updateService.CurrentVersion;
+            VersionText.Text = $"Version {v}";
+            ReleaseNotesLink.NavigateUri = new Uri($"{UpdateService.RepoUrl}/releases/tag/v{v}");
+            return;
+        }
+
+        var info = Assembly.GetExecutingAssembly()
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
+        var parts = info?.Split('+', 2);
+        var commit = parts is { Length: 2 } ? parts[1] : null;
+        VersionText.Text = string.IsNullOrEmpty(commit)
+            ? "Development build (not installed from a release)"
+            : $"Development build {commit[..Math.Min(7, commit.Length)]} (not installed from a release)";
     }
 
     private async void CheckUpdates_Click(object sender, RoutedEventArgs e)
