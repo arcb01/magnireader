@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/magnireader-logo.svg" alt="MagniReader logo" width="160" height="160">
+  <img src="assets/magnireader.svg" alt="MagniReader logo" width="160" height="160">
 </p>
 
 <h1 align="center">MagniReader</h1>
@@ -48,7 +48,8 @@ MagniReader keeps itself up to date. New releases download in the background and
 1. Hold **`Ctrl+Alt`** and **click** any text: a web page, a document, a button, a menu.
 2. MagniReader dims the screen, highlights the text box and the word being spoken, and reads on through the following paragraphs.
 3. **Left-click anywhere** or press **`Esc`** to stop.
-4. Press **`Ctrl+Alt+S`** and drag over any area to get an AI description of it.
+4. Select text anywhere and press **`Ctrl+Alt+R`** to read just your selection.
+5. Press **`Ctrl+Alt+S`** and drag over any area to get an AI description of it.
 
 Prefer the mouse alone? Press **▶ Read** on the control bar, then click the text.
 
@@ -63,7 +64,7 @@ Prefer the mouse alone? Press **▶ Read** on the control bar, then click the te
 - **Quieter background audio.** Music and videos turn down while MagniReader speaks and come back when it stops.
 - **AI screen descriptions.** Snap any area and get a short summary read aloud, with a detailed description on demand (Gemini or OpenAI).
 - **Control bar.** A compact always-on-top toolbar that never steals focus from the app you're reading.
-- **Configurable shortcuts.** Change the reading, snip and stop keys in Settings.
+- **Configurable shortcuts.** Record your own keys for reading, reading a selection and describing the screen.
 - **Installer, auto-updates and launch at startup.** One setup file, updates from GitHub Releases, and an optional start with Windows.
 
 ## Usage
@@ -71,6 +72,7 @@ Prefer the mouse alone? Press **▶ Read** on the control bar, then click the te
 | Action | Default |
 |---|---|
 | Read text | `Ctrl+Alt+Click` on any text |
+| Read selected text | Select it, then `Ctrl+Alt+R` |
 | Read without the keyboard | **▶ Read** on the control bar, then click the text |
 | Describe a screen area | `Ctrl+Alt+S`, then drag to select |
 | Pause, back / forward 10 s | Strip on top of the text being read |
@@ -79,7 +81,7 @@ Prefer the mouse alone? Press **▶ Read** on the control bar, then click the te
 | Show the control bar | Double-click the tray icon |
 | Exit | **✕** on the control bar, or right-click the tray icon → Exit |
 
-Shortcuts can be changed in **Settings → Shortcuts**.
+The read, read-selection and describe shortcuts can be changed in **Settings → Shortcuts**. Stopping always works with `Esc` or a click.
 
 ### Control bar
 
@@ -106,13 +108,13 @@ While a text is being read, a small strip sits on top of the highlighted box: **
 
 ## Voices
 
-Pick the engine in **Settings → Speech & Voice**, or switch it from the control bar.
+Pick the engine in **Settings → Speech**, or switch it from the control bar.
 
 ### Kokoro (recommended)
 
 Offline neural voices for English and Spanish that sound natural and need no account or internet once downloaded.
 
-1. **Settings → Speech & Voice → Voice engine → Kokoro**.
+1. **Settings → Speech → Voice engine → Kokoro**.
 2. Click **⬇ Download Kokoro model** (a one-time download, kept across updates).
 3. Choose an English and a Spanish voice and press ▶ to preview them.
 
@@ -120,7 +122,7 @@ Other languages (Catalan, French, …) are read with Windows voices, and if Koko
 
 ### Windows voices
 
-MagniReader works out of the box with every installed Windows voice. With the Windows engine selected, Settings lists the voices per language so you can preview them and drag them into the order you prefer.
+MagniReader works out of the box with every installed Windows voice. With the Windows engine selected, Settings lists the voices per language so you can preview them and reorder them with ▲ ▼. The first voice of each language is used.
 
 <details>
 <summary><strong>Unlock the Windows Natural voices</strong></summary>
@@ -148,10 +150,11 @@ Screenshots are sent only to the provider you choose, and only when you take one
 
 | Tab | What's there |
 |---|---|
-| **Speech & Voice** | Voice engine, Kokoro voices and model, Windows voice order (Windows engine only), rate, volume, lowering other sounds, overlay dim and highlight theme |
+| **Speech** | Voice engine, Kokoro voices and model download, voice priority per language (Windows engine), rate, volume, lowering other sounds |
+| **Display** | How much to dim the rest of the screen, highlight theme |
+| **Shortcuts** | Record the read, read-selection and describe-area shortcuts, or reset them |
 | **Vision** | AI provider, API key, key test |
-| **Shortcuts** | Reading, snip and stop keys |
-| **App** | Launch at startup, automatic updates, check for updates, version |
+| **App** | Launch at startup, automatic updates, check for updates, installed version |
 
 ## How it works
 
@@ -252,7 +255,7 @@ magnireader/
 │   └── CrashLogger.cs            # Crash reports + diagnostics log
 ├── Helpers/
 │   └── NativeInterop.cs          # Win32 P/Invoke
-├── docs/assets/                  # README images
+├── assets/                      # Logo (SVG + PNG)
 └── scripts/                      # Standalone admin voice tools
 ```
 
