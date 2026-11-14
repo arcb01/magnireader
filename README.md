@@ -60,6 +60,16 @@ A compact, always-on-top toolbar in the spirit of the Windows Magnifier toolbar.
 
 Drag the bar by its "MagniReader" label. It remembers where you put it, and whether it was hidden.
 
+## Reading controls
+
+While a text is being read, a small strip of controls sits on top of the highlighted box: **⏪ 10** (back 10 seconds), **⏸ / ▶** (pause / continue), **10 ⏩** (forward 10 seconds) and **■** (stop). Clicking them doesn't stop the reading or take focus from the app you're reading. Very short texts (a button, a heading) don't get the strip.
+
+- Back stops at the start of the current paragraph. Forward past its end moves on to the next one.
+- The word box follows the jump right away.
+- **Kokoro** and Windows voices played through Windows' own player jump exactly 10 seconds.
+- **SAPI voices** (e.g. Natural voices through NaturalVoiceSAPIAdapter) can't jump inside their audio, so speech restarts at the word estimated to be 10 seconds away. The jump is close to 10 seconds, not exact.
+- Other apps' audio comes back up while paused.
+
 ## Usage
 
 | Action | How |
@@ -67,6 +77,7 @@ Drag the bar by its "MagniReader" label. It remembers where you put it, and whet
 | Read text | `Ctrl+Alt+Click` on any text |
 | Analyze screen area | `Ctrl+Alt+S` → drag to select |
 | Read without Ctrl+Alt | Control bar ▶, then click the text |
+| Pause, back / forward 10 s | Controls on top of the box being read |
 | Stop reading | Left-click anywhere, `Escape`, or ■ on the bar |
 | Settings | ⚙ on the control bar, or right-click tray icon → Settings |
 | Show the control bar | Double-click the tray icon |
