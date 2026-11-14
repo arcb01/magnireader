@@ -32,6 +32,12 @@ public partial class App : Application
     private SettingsStore? _settingsStore;
     private VisionAnalyzer? _visionAnalyzer;
     private HoverHighlightWindow? _hoverHighlight;
+    private UpdateService? _updateService;
+    private DispatcherTimer? _updateTimer;
+    private System.Windows.Controls.MenuItem? _restartToUpdateItem;
+
+    // Held for the app's lifetime: a local would be garbage-collected and release the lock.
+    private static System.Threading.Mutex? _singleInstanceMutex;
     private ControlBarWindow? _controlBar;
     private bool _toldAboutTray;
 
@@ -94,9 +100,15 @@ public partial class App : Application
         }
 
         // Single instance check
-        var mutex = new System.Threading.Mutex(true, "MagniReader_SingleInstance", out bool isNew);
+        _singleInstanceMutex = new System.Threading.Mutex(true, "MagniReader_SingleInstance", out bool isNew);
         if (!isNew)
         {
+            // Windows auto-start finding the app already running: nothing to say.
+            if (e.Args.Contains(StartupManager.AutostartArg))
+            {
+                Shutdown();
+                return;
+            }
             MessageBox.Show("MagniReader is already running!", "MagniReader",
                 MessageBoxButton.OK, MessageBoxImage.Information);
             Shutdown();
@@ -148,8 +160,17 @@ public partial class App : Application
         // Compact control bar (like the Magnifier toolbar)
         SetupControlBar();
 
-        // Show voice diagnostic on startup
-        ShowVoiceDiagnostic();
+        // Keep the Windows startup entry in line with the setting
+        StartupManager.Sync(_settingsStore.Settings.LaunchOnStartup);
+
+        // Auto-updates from GitHub Releases (installed app only)
+        _updateService = new UpdateService();
+        _updateService.UpdateReady += version => Dispatcher.BeginInvoke(() => OnUpdateReady(version));
+        StartUpdateChecks();
+
+        // Show voice diagnostic on startup (skip the balloon when Windows auto-starts us)
+        if (!e.Args.Contains(StartupManager.AutostartArg))
+            ShowVoiceDiagnostic();
 
         // Show the overlay window (hidden) to initialize it
         _overlay.Show();
@@ -206,6 +227,16 @@ public partial class App : Application
         // Create context menu
         var contextMenu = new System.Windows.Controls.ContextMenu();
 
+        // Shown once an update has been downloaded
+        _restartToUpdateItem = new System.Windows.Controls.MenuItem
+        {
+            Header = "⬆ Restart to update",
+            FontWeight = FontWeights.Bold,
+            Visibility = Visibility.Collapsed,
+        };
+        _restartToUpdateItem.Click += (s, e) => RestartToUpdate();
+        contextMenu.Items.Add(_restartToUpdateItem);
+
         var barItem = new System.Windows.Controls.MenuItem { Header = "▭ Show control bar" };
         barItem.Click += (s, e) => ShowControlBar();
         contextMenu.Items.Add(barItem);
@@ -216,9 +247,13 @@ public partial class App : Application
 
         contextMenu.Items.Add(new System.Windows.Controls.Separator());
 
+        var updatesItem = new System.Windows.Controls.MenuItem { Header = "🔄 Check for updates" };
+        updatesItem.Click += async (s, e) => await CheckForUpdatesNowAsync();
+        contextMenu.Items.Add(updatesItem);
+
         var aboutItem = new System.Windows.Controls.MenuItem { Header = "ℹ About MagniReader" };
         aboutItem.Click += (s, e) => MessageBox.Show(
-            "MagniReader v1.0\n\n" +
+            $"MagniReader v{_updateService?.CurrentVersion}\n\n" +
             "An intelligent screen reader that reads text aloud\n" +
             "with automatic language detection.\n\n" +
             "How to use:\n" +
@@ -641,7 +676,8 @@ public partial class App : Application
 
     private void OpenSettings()
     {
-        var settingsWindow = new SettingsWindow(_settingsStore!, _voiceManager!, ApplySettings);
+        var settingsWindow = new SettingsWindow(_settingsStore!, _voiceManager!, ApplySettings, _updateService!);
+        settingsWindow.RestartRequested += () => Dispatcher.BeginInvoke(() => RestartToUpdate());
         settingsWindow.ShowDialog();
     }
 
@@ -653,11 +689,91 @@ public partial class App : Application
         _speechEngine?.ConfigureDucking(settings);
         _overlay?.UpdateSettings(settings.DimOpacity, settings.HighlightColor);
         RefreshControlBar();
+        if (_updateService != null) StartUpdateChecks();
+    }
+
+    // ─── Auto-update ─────────────────────────────────────────
+
+    private void StartUpdateChecks()
+    {
+        _updateTimer?.Stop();
+        _updateTimer = null;
+        if (_updateService == null || !_updateService.IsInstalled) return;
+        if (_settingsStore?.Settings.AutoCheckUpdates != true) return;
+
+        // First check shortly after startup (don't slow the launch), then every 6 hours.
+        _updateTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
+        _updateTimer.Tick += async (s, e) =>
+        {
+            _updateTimer!.Interval = TimeSpan.FromHours(6);
+            await _updateService.CheckAndDownloadAsync();
+        };
+        _updateTimer.Start();
+    }
+
+    private async Task CheckForUpdatesNowAsync()
+    {
+        if (_updateService == null) return;
+        var result = await _updateService.CheckAndDownloadAsync();
+        switch (result)
+        {
+            case UpdateService.CheckResult.NotInstalled:
+                _trayIcon?.ShowBalloonTip("MagniReader",
+                    "Updates only work in the installed version (run MagniReader-win-Setup.exe).",
+                    BalloonIcon.Info);
+                break;
+            case UpdateService.CheckResult.UpToDate:
+                _trayIcon?.ShowBalloonTip("MagniReader",
+                    $"You have the latest version ({_updateService.CurrentVersion}).", BalloonIcon.Info);
+                break;
+            case UpdateService.CheckResult.Failed:
+                _trayIcon?.ShowBalloonTip("MagniReader",
+                    "Couldn't check for updates. Are you online?", BalloonIcon.Warning);
+                break;
+            // UpdateReady shows its own balloon via OnUpdateReady
+        }
+    }
+
+    private void OnUpdateReady(string version)
+    {
+        if (_restartToUpdateItem != null)
+        {
+            _restartToUpdateItem.Header = $"⬆ Restart to update (v{version})";
+            _restartToUpdateItem.Visibility = Visibility.Visible;
+        }
+        _trayIcon?.ShowBalloonTip(
+            "MagniReader update ready",
+            $"Version {version} has been downloaded. It installs next time MagniReader starts, " +
+            "or right-click the tray icon → Restart to update.",
+            BalloonIcon.Info);
+    }
+
+    private void RestartToUpdate()
+    {
+        if (_updateService?.PendingVersion == null) return;
+        // Release hooks, audio ducking and the tray icon before the process is replaced.
+        StopReading();
+        _speechEngine?.Ducker.RestoreNow();
+        _trayIcon?.Dispose();
+        _inputManager?.Dispose();
+        _singleInstanceMutex?.ReleaseMutex();
+        _singleInstanceMutex?.Dispose();
+        _singleInstanceMutex = null;
+        try
+        {
+            _updateService.ApplyAndRestart();
+        }
+        catch (Exception ex)
+        {
+            CrashLogger.LogError("[Update] Restart to update failed", ex);
+            ExitApplication();
+        }
     }
 
     private void ExitApplication()
     {
         StopReading();
+        _updateService?.ApplyOnExitIfPending();
         _trayIcon?.Dispose();
         _inputManager?.Dispose();
         _speechEngine?.Dispose();

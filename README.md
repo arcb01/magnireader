@@ -19,7 +19,17 @@ A fast, always-available screen reader with AI-powered visual analysis.
 - **🔍 Screenshot analysis** — capture any screen area with `Ctrl+Alt+S` and get an AI-powered description via Gemini or OpenAI. Quick summary first, detailed analysis on demand.
 - **Lightweight** — pure C# / .NET 8 / WPF. No Electron, no Python, no cloud dependencies for core operation.
 
-## Quick start
+## Install
+
+1. Download **`MagniReader-win-Setup.exe`** from the [latest release](https://github.com/arcb01/magnireader/releases/latest).
+2. Run it. No admin rights needed: MagniReader installs for your user, adds Start menu and desktop shortcuts, and starts with its control bar and tray icon.
+3. Optional: right-click the tray icon → **Settings → 🚀 App → Launch MagniReader when Windows starts**.
+
+Installed copies update themselves: a new release is downloaded in the background and installed the next time MagniReader starts (or right-click the tray icon → **Restart to update**). Uninstall from Windows **Settings → Apps**. Your settings and the Kokoro model in `%APPDATA%\MagniReader` are kept across updates.
+
+> Windows SmartScreen may warn about an unrecognized app because the installer isn't code-signed. Click **More info → Run anyway**.
+
+## Quick start (from source)
 
 **Prerequisites:** [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0) on Windows 10/11.
 
@@ -136,6 +146,7 @@ Right-click the tray icon → Settings to access:
 - **Speech** — rate, volume, overlay dim opacity, highlight theme
 - **Voices** — drag to reorder voice priority per language, preview any voice
 - **Vision** — select AI provider (Gemini/OpenAI), enter API key, test connectivity
+- **App** — launch at Windows startup, automatic updates, check for updates now, current version
 
 ## Building
 
@@ -148,6 +159,19 @@ dotnet publish -c Release -r win-x64 --self-contained -p:PublishSingleFile=true
 
 # Output: bin/Release/net8.0-windows10.0.17763.0/publish/MagniReader.exe
 ```
+
+## Releasing
+
+Releases are built by GitHub Actions ([`.github/workflows/release.yml`](.github/workflows/release.yml)) with [Velopack](https://velopack.io):
+
+```bash
+git tag v1.1.0
+git push origin v1.1.0
+```
+
+The workflow publishes a self-contained build, packs `MagniReader-win-Setup.exe`, a portable zip and full + delta update packages, and attaches them to a new GitHub Release. Installed copies pick it up within a few hours. You can also run the workflow by hand from the **Actions** tab and type the version.
+
+Updates only run in the installed app. When you `dotnet run` from source, the update check is skipped.
 
 ## Project structure
 
