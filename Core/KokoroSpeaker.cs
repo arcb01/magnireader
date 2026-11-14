@@ -648,8 +648,7 @@ public sealed class KokoroSpeaker : IDisposable
 
     private static void Log(string message)
     {
-        Debug.WriteLine(message);
-        Infrastructure.CrashLogger.LogInfo(message);
+        Infrastructure.CrashLogger.LogTrace(message);
     }
 
     public void Dispose()

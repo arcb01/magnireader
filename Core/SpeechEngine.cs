@@ -325,7 +325,7 @@ public class SpeechEngine : IDisposable
         }
         catch (Exception ex)
         {
-            Infrastructure.CrashLogger.LogError($"Speech failed for '{text[..Math.Min(50, text.Length)]}...'", ex);
+            Infrastructure.CrashLogger.LogError($"Speech failed ({text.Length} chars, lang={culture.Name})", ex);
             _isSpeaking = false;
             SpeechCompleted?.Invoke();
         }
@@ -404,8 +404,7 @@ public class SpeechEngine : IDisposable
     /// </summary>
     private static void LogTrace(string message)
     {
-        System.Diagnostics.Debug.WriteLine(message);
-        Infrastructure.CrashLogger.LogInfo(message);
+        Infrastructure.CrashLogger.LogTrace(message);
     }
 
     /// <summary>

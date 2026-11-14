@@ -162,7 +162,7 @@ public sealed class AudioDucker : IDisposable
         SaveState();
         int added = _ducked.Count - before;
         if (added > 0)
-            Infrastructure.CrashLogger.LogInfo(
+            Infrastructure.CrashLogger.LogTrace(
                 $"[Ducker] Lowered {added} app(s) to {level:P0} in {sw.ElapsedMilliseconds}ms: " +
                 string.Join(", ", _ducked.Skip(before).Select(d => ProcessName(d.ProcessId))));
     }

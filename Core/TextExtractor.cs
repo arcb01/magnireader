@@ -222,6 +222,66 @@ public class TextExtractor
         return elements;
     }
 
+    // ─── Selected text ───────────────────────────────────────────
+
+    private const int MaxSelectionChars = 20000;
+
+    /// <summary>
+    /// Returns the text selected in the focused app (via UI Automation TextPattern),
+    /// or null when there is no selection or the app doesn't expose it.
+    /// </summary>
+    public TextElement? ExtractSelection()
+    {
+        try
+        {
+            var element = AutomationElement.FocusedElement;
+            var walker = TreeWalker.ControlViewWalker;
+            for (int depth = 0; element != null && depth < 6; depth++, element = walker.GetParent(element))
+            {
+                if (!element.TryGetCurrentPattern(TextPattern.Pattern, out var obj)) continue;
+                var pattern = (TextPattern)obj;
+                if (pattern.SupportedTextSelection == SupportedTextSelection.None) continue;
+
+                var ranges = pattern.GetSelection();
+                if (ranges == null || ranges.Length == 0) return null;
+
+                var sb = new System.Text.StringBuilder();
+                var bounds = Rect.Empty;
+                foreach (var range in ranges)
+                {
+                    var part = range.GetText(MaxSelectionChars - sb.Length);
+                    if (!string.IsNullOrWhiteSpace(part))
+                    {
+                        if (sb.Length > 0) sb.Append('\n');
+                        sb.Append(part);
+                    }
+                    try
+                    {
+                        foreach (var r in range.GetBoundingRectangles())
+                            if (!r.IsEmpty && r.Width > 0 && r.Height > 0) bounds.Union(r);
+                    }
+                    catch { }
+                    if (sb.Length >= MaxSelectionChars) break;
+                }
+
+                var text = CleanText(sb.ToString());
+                if (string.IsNullOrWhiteSpace(text)) return null;
+                return new TextElement
+                {
+                    Text = text,
+                    BoundingRect = bounds,
+                    Source = element,
+                    Range = ranges.Length == 1 ? ranges[0] : null,
+                };
+            }
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[TextExtractor] Selection error: {ex.Message}");
+        }
+        return null;
+    }
+
     // ─── Paragraph reading (browsers, documents) ─────────────────
 
     private const int MaxParagraphChars = 4000;

@@ -20,17 +20,29 @@ public static class CrashLogger
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
         "MagniReader", "logs");
 
-    private static readonly string LogFile;
+    private static string LogFile;
     private static readonly object _lock = new();
     private const long MaxLogSize = 1_048_576; // 1 MB
     private const int MaxLogFiles = 5;
+    private static int _rollCount;
+
+    /// <summary>
+    /// When false (the default), <see cref="LogTrace"/> only goes to the debugger, not the file.
+    /// Turned on from the tray menu ("Diagnostic logging") when a user needs to send a log.
+    /// Traces never contain the text being read, only lengths, languages and timings.
+    /// </summary>
+    public static volatile bool DiagnosticsEnabled;
 
     static CrashLogger()
     {
         Directory.CreateDirectory(LogDir);
-        LogFile = Path.Combine(LogDir, $"magnireader_{DateTime.Now:yyyyMMdd_HHmmss}.log");
+        LogFile = NewLogFileName();
         RotateOldLogs();
     }
+
+    private static string NewLogFileName() =>
+        Path.Combine(LogDir, $"magnireader_{DateTime.Now:yyyyMMdd_HHmmss}" +
+                             (_rollCount > 0 ? $"_{_rollCount}" : "") + ".log");
 
     /// <summary>
     /// Returns the directory where log files are stored.
@@ -97,6 +109,19 @@ public static class CrashLogger
     }
 
     /// <summary>
+    /// Logs a detailed diagnostic event (speech routing, timings, voice checks).
+    /// Written to the file only when <see cref="DiagnosticsEnabled"/> is on.
+    /// Never pass the text being read: log its length instead.
+    /// </summary>
+    public static void LogTrace(string message)
+    {
+        if (DiagnosticsEnabled)
+            Write($"[TRACE] {DateTime.Now:HH:mm:ss.fff} {message}");
+        else
+            Debug.WriteLine(message);
+    }
+
+    /// <summary>
     /// Logs app startup with system diagnostics.
     /// </summary>
     public static void LogStartup()
@@ -150,6 +175,14 @@ public static class CrashLogger
         {
             try
             {
+                // Cap each file at MaxLogSize: start a new one and drop the oldest.
+                var info = new FileInfo(LogFile);
+                if (info.Exists && info.Length >= MaxLogSize)
+                {
+                    _rollCount++;
+                    LogFile = NewLogFileName();
+                    RotateOldLogs();
+                }
                 File.AppendAllText(LogFile, text + Environment.NewLine);
             }
             catch
@@ -171,7 +204,9 @@ public static class CrashLogger
                 .OrderByDescending(f => f)
                 .ToArray();
 
-            // Delete old logs beyond the keep limit
+            // Delete old logs beyond the keep limit (never the one being written)
+            logFiles = logFiles.Where(f => !string.Equals(f, LogFile, StringComparison.OrdinalIgnoreCase))
+                .Prepend(LogFile).ToArray();
             for (int i = MaxLogFiles; i < logFiles.Length; i++)
             {
                 try { File.Delete(logFiles[i]); }

@@ -1,11 +1,19 @@
 name: Release
 
-# Builds MagniReader, packages it with Velopack and publishes a GitHub Release.
-# Installed copies of the app check these releases and update themselves.
+# Builds MagniReader, packages it with Velopack and uploads it as a DRAFT GitHub Release.
+# Installed copies of the app check published releases and update themselves, so
+# nothing reaches users until a maintainer reviews the draft and clicks "Publish".
 #
-# To release: push a tag like v1.2.0
+# To release: push a tag like v1.2.0 on a commit that is on main
 #   git tag v1.2.0 && git push origin v1.2.0
 # or run this workflow by hand from the Actions tab and type the version.
+# Then open the draft under Releases, check it, and publish it.
+#
+# Safety:
+#   - The job runs in the "release" environment. In Settings → Environments → release,
+#     add yourself as a required reviewer so every run waits for your approval.
+#   - Only commits already on main can be released.
+#   - Code signing turns on automatically when its secrets exist (see "Signing" below).
 
 on:
   push:
@@ -26,10 +34,21 @@ concurrency:
 jobs:
   release:
     runs-on: windows-latest
+    environment: release
     env:
       VPK_VERSION: '1.2.161' # keep in step with the Velopack package in MagniReader.csproj
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Only release code that went through main (reviewed PRs), never a stray branch.
+      - name: Check the commit is on main
+        shell: pwsh
+        run: |
+          git fetch origin main --quiet
+          git merge-base --is-ancestor $env:GITHUB_SHA origin/main
+          if ($LASTEXITCODE -ne 0) { throw "Commit $env:GITHUB_SHA is not on main; refusing to release it." }
 
       - uses: actions/setup-dotnet@v4
         with:
@@ -58,7 +77,42 @@ jobs:
         continue-on-error: true
         run: vpk download github --repoUrl https://github.com/${{ github.repository }} --channel win --token ${{ secrets.GITHUB_TOKEN }}
 
+      # Signing: add ONE of these sets of repository secrets and every release is signed.
+      #   Azure Trusted Signing: AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET,
+      #     plus TRUSTED_SIGNING_METADATA (the metadata.json content: Endpoint,
+      #     CodeSigningAccountName, CertificateProfileName)
+      #   Certificate file: SIGN_PFX_BASE64 (the .pfx, base64) and SIGN_PFX_PASSWORD
+      # Without them the release is unsigned (Windows SmartScreen will warn on install).
+      - name: Prepare signing
+        id: sign
+        shell: pwsh
+        env:
+          TRUSTED_SIGNING_METADATA: ${{ secrets.TRUSTED_SIGNING_METADATA }}
+          SIGN_PFX_BASE64: ${{ secrets.SIGN_PFX_BASE64 }}
+          SIGN_PFX_PASSWORD: ${{ secrets.SIGN_PFX_PASSWORD }}
+        run: |
+          $signArgs = ''
+          if ($env:TRUSTED_SIGNING_METADATA) {
+            $file = Join-Path $env:RUNNER_TEMP 'trusted-signing.json'
+            Set-Content -Path $file -Value $env:TRUSTED_SIGNING_METADATA -NoNewline
+            $signArgs = "--azureTrustedSignFile $file"
+            Write-Host 'Signing with Azure Trusted Signing'
+          } elseif ($env:SIGN_PFX_BASE64) {
+            $pfx = Join-Path $env:RUNNER_TEMP 'sign.pfx'
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:SIGN_PFX_BASE64))
+            $signArgs = "--signParams `"/f $pfx /p $env:SIGN_PFX_PASSWORD /fd sha256 /tr http://timestamp.digicert.com /td sha256`""
+            Write-Host 'Signing with the certificate file'
+          } else {
+            Write-Host '::warning::No signing secrets set: this release is NOT code-signed.'
+          }
+          "args=$signArgs" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
       - name: Pack installer and update packages
+        shell: pwsh
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
         run: >
           vpk pack
           --packId MagniReader
@@ -69,14 +123,15 @@ jobs:
           --packAuthors arcb01
           --icon app.ico
           --shortcuts Desktop,StartMenuRoot
+          ${{ steps.sign.outputs.args }}
 
-      - name: Upload to GitHub Releases
+      # Uploaded as a draft (no --publish): users only get it once you publish it by hand.
+      - name: Upload to GitHub Releases (draft)
         run: >
           vpk upload github
           --repoUrl https://github.com/${{ github.repository }}
           --channel win
           --token ${{ secrets.GITHUB_TOKEN }}
-          --publish
           --releaseName "MagniReader ${{ env.VERSION }}"
           --tag v${{ env.VERSION }}
           --targetCommitish ${{ github.sha }}
