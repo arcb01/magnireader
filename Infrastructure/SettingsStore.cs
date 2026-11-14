@@ -1,5 +1,8 @@
 using System.IO;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace MagniReader.Infrastructure;
 
@@ -21,14 +24,16 @@ public class SettingsStore
         Settings = Load();
     }
 
-    public void Save()
+    public void Save() => SaveTo(Settings);
+
+    private static void SaveTo(AppSettings settings)
     {
         try
         {
             var dir = Path.GetDirectoryName(SettingsPath)!;
             Directory.CreateDirectory(dir);
 
-            var json = JsonSerializer.Serialize(Settings, new JsonSerializerOptions
+            var json = JsonSerializer.Serialize(settings, new JsonSerializerOptions
             {
                 WriteIndented = true
             });
@@ -47,7 +52,21 @@ public class SettingsStore
             if (File.Exists(SettingsPath))
             {
                 var json = File.ReadAllText(SettingsPath);
-                return JsonSerializer.Deserialize<AppSettings>(json) ?? new AppSettings();
+                var settings = JsonSerializer.Deserialize<AppSettings>(json) ?? new AppSettings();
+
+                // Older versions stored the API key in plain text ("VisionApiKey"). Take it
+                // and rewrite the file right away so only the encrypted copy stays on disk.
+                using var doc = JsonDocument.Parse(json);
+                if (doc.RootElement.ValueKind == JsonValueKind.Object &&
+                    doc.RootElement.TryGetProperty("VisionApiKey", out var legacy) &&
+                    legacy.ValueKind == JsonValueKind.String)
+                {
+                    var key = legacy.GetString();
+                    if (!string.IsNullOrEmpty(key) && string.IsNullOrEmpty(settings.VisionApiKey))
+                        settings.VisionApiKey = key;
+                    SaveTo(settings);
+                }
+                return settings;
             }
         }
         catch
@@ -124,6 +143,86 @@ public class AppSettings
     /// <summary>Vision API provider: "Gemini" or "OpenAI".</summary>
     public string VisionProvider { get; set; } = "Gemini";
 
-    /// <summary>API key for the selected vision provider.</summary>
+    /// <summary>
+    /// API key for the selected vision provider, in memory only. On disk it is stored
+    /// encrypted with Windows DPAPI for the current user (<see cref="VisionApiKeyProtected"/>),
+    /// so copying settings.json to another account or PC doesn't reveal it.
+    /// </summary>
+    [JsonIgnore]
     public string VisionApiKey { get; set; } = "";
+
+    /// <summary>The API key encrypted with DPAPI (CurrentUser), Base64. What settings.json holds.</summary>
+    public string? VisionApiKeyProtected
+    {
+        get => SecretProtector.Protect(VisionApiKey);
+        set => VisionApiKey = SecretProtector.Unprotect(value);
+    }
+
+    /// <summary>
+    /// The user agreed that snips are uploaded to the vision provider. Asked once, before
+    /// the first upload; turning it off again makes MagniReader ask on the next snip.
+    /// </summary>
+    public bool VisionUploadConsent { get; set; } = false;
+
+    // ─── Shortcuts ───────────────────────────────────────────────
+    // Format "Mod+Mod+Key" with modifiers Ctrl, Alt, Shift, Win (see Input/Hotkey.cs).
+    // On keyboards with AltGr, "Alt" means the left Alt key only, so typing @ # € with
+    // AltGr never triggers MagniReader.
+
+    /// <summary>Modifiers held while left-clicking text to read it (no key). Default "Ctrl+Alt".</summary>
+    public string ReadHotkey { get; set; } = "Ctrl+Alt";
+
+    /// <summary>Opens the snipping tool for the vision feature.</summary>
+    public string SnipHotkey { get; set; } = "Ctrl+Alt+S";
+
+    /// <summary>Reads the selected text, or the clipboard when nothing is selected.</summary>
+    public string ReadSelectionHotkey { get; set; } = "Ctrl+Alt+R";
+
+    // ─── Diagnostics ─────────────────────────────────────────────
+
+    /// <summary>
+    /// Write detailed speech/voice traces to the log file. Off by default; the text being
+    /// read is never logged either way.
+    /// </summary>
+    public bool DiagnosticLogging { get; set; } = false;
+}
+
+/// <summary>
+/// Encrypts small secrets (API keys) with Windows DPAPI, tied to the current Windows user.
+/// </summary>
+internal static class SecretProtector
+{
+    private static readonly byte[] Entropy = Encoding.UTF8.GetBytes("MagniReader.VisionApiKey.v1");
+
+    public static string? Protect(string? plain)
+    {
+        if (string.IsNullOrEmpty(plain)) return null;
+        try
+        {
+            var data = ProtectedData.Protect(Encoding.UTF8.GetBytes(plain), Entropy, DataProtectionScope.CurrentUser);
+            return Convert.ToBase64String(data);
+        }
+        catch (Exception ex)
+        {
+            // Never fall back to plain text: the key just won't be saved.
+            CrashLogger.LogError("Could not encrypt the API key; it will not be saved", ex);
+            return null;
+        }
+    }
+
+    public static string Unprotect(string? protectedBase64)
+    {
+        if (string.IsNullOrEmpty(protectedBase64)) return "";
+        try
+        {
+            var data = ProtectedData.Unprotect(Convert.FromBase64String(protectedBase64), Entropy, DataProtectionScope.CurrentUser);
+            return Encoding.UTF8.GetString(data);
+        }
+        catch (Exception ex)
+        {
+            // Settings copied from another user/PC: the key has to be entered again.
+            CrashLogger.LogWarning($"Could not decrypt the saved API key ({ex.GetType().Name}); please enter it again");
+            return "";
+        }
+    }
 }

@@ -82,8 +82,11 @@ public class VisionAnalyzer : IDisposable
             if (provider == Provider.Gemini)
             {
                 // Try listing models — lightweight call to verify the key
-                var url = $"https://generativelanguage.googleapis.com/v1beta/models?key={apiKey}";
-                var response = await _http.GetAsync(url);
+                // Key in a header, never in the URL (URLs end up in proxy and server logs)
+                using var request = new HttpRequestMessage(HttpMethod.Get,
+                    "https://generativelanguage.googleapis.com/v1beta/models");
+                request.Headers.Add("x-goog-api-key", apiKey);
+                var response = await _http.SendAsync(request);
                 var body = await response.Content.ReadAsStringAsync();
 
                 if (!response.IsSuccessStatusCode)
@@ -110,7 +113,7 @@ public class VisionAnalyzer : IDisposable
             else
             {
                 // OpenAI: try listing models
-                var request = new HttpRequestMessage(HttpMethod.Get, "https://api.openai.com/v1/models");
+                using var request = new HttpRequestMessage(HttpMethod.Get, "https://api.openai.com/v1/models");
                 request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
                 var response = await _http.SendAsync(request);
 
@@ -159,11 +162,15 @@ public class VisionAnalyzer : IDisposable
         string lastError = "";
         foreach (var model in GeminiModels)
         {
-            var url = $"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={apiKey}";
-            var content = new StringContent(json, Encoding.UTF8, "application/json");
+            var url = $"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent";
+            using var request = new HttpRequestMessage(HttpMethod.Post, url)
+            {
+                Content = new StringContent(json, Encoding.UTF8, "application/json"),
+            };
+            request.Headers.Add("x-goog-api-key", apiKey);
 
             System.Diagnostics.Debug.WriteLine($"[VisionAnalyzer] Trying Gemini model: {model}");
-            var response = await _http.PostAsync(url, content);
+            var response = await _http.SendAsync(request);
             var responseJson = await response.Content.ReadAsStringAsync();
 
             if (response.StatusCode == System.Net.HttpStatusCode.NotFound)

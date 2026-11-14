@@ -84,10 +84,12 @@ public partial class ControlBarWindow : Window
     /// True when the physical-pixel screen point (as given by the low-level mouse hook)
     /// is on the visible bar. Used so clicking the bar doesn't cancel or trigger a reading.
     /// </summary>
+    /// <remarks>Called from the input hook thread: uses only Win32, no WPF properties.</remarks>
     public bool ContainsScreenPoint(int x, int y)
     {
-        if (_hwnd == IntPtr.Zero || !IsVisible) return false;
-        if (!NativeInterop.GetWindowRect(_hwnd, out var r)) return false;
+        var hwnd = _hwnd;
+        if (hwnd == IntPtr.Zero || !NativeInterop.IsWindowVisible(hwnd)) return false;
+        if (!NativeInterop.GetWindowRect(hwnd, out var r)) return false;
         return x >= r.Left && x < r.Right && y >= r.Top && y < r.Bottom;
     }
 

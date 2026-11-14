@@ -12,18 +12,23 @@ namespace MagniReader.Core;
 /// Finds where each word of the text being read sits on screen, so the overlay
 /// can draw a box over the word that is being spoken.
 ///
-/// Two strategies, tried in this order:
-///   1. UI Automation TextPattern: search each word in the element's document
-///      range with FindText and ask for its bounding rectangles. Exact, works in
-///      browsers, Word, Notepad, Edge PDFs and most text controls.
-///   2. OCR (Windows.Media.Ocr): screenshot the element, recognise the words and
+/// Strategies, tried in this order:
+///   1. UI Automation lines: walk the paragraph line by line (one text + one
+///      rectangle per line) and place each word inside its line by measuring the
+///      text with the line's font. About ten cross-process calls per line instead
+///      of three per word, so a long paragraph costs tens of calls, not a thousand.
+///   2. UI Automation FindText: search each word with FindText and ask for its
+///      rectangles. Exact, but slow; used when the app doesn't report lines.
+///   3. OCR (Windows.Media.Ocr): screenshot the element, recognise the words and
 ///      align them in order with the spoken words. Used when the text came from
-///      a Name/Value property (labels, buttons, most simple controls) or when
-///      TextPattern can't find the words.
+///      a Name/Value property or UI Automation can't place the words. The
+///      screenshot is only taken when it's needed.
 ///
-/// Rectangles are computed on a background thread, ahead of the speech, and
-/// stored per word. All rectangles are in physical screen pixels, the same
-/// space as AutomationElement.BoundingRectangle.
+/// Everything runs on a background thread, ahead of the speech. While reading,
+/// the locator checks every half second whether the text has moved (the user
+/// scrolled) and shifts all boxes by the same amount; <see cref="Moved"/> tells
+/// the app so the highlight follows. All rectangles are in physical screen
+/// pixels, the same space as AutomationElement.BoundingRectangle.
 /// </summary>
 public sealed class WordLocator : IDisposable
 {
@@ -32,20 +37,37 @@ public sealed class WordLocator : IDisposable
     private readonly Rect?[] _rects;
     private readonly CancellationTokenSource _cts = new();
 
+    // Scroll tracking: something on screen whose position we can re-query cheaply,
+    // with the rectangle it had when the words were located.
+    private sealed class Anchor
+    {
+        public TextPatternRange? Range;
+        public AutomationElement? Element;
+        public Rect Baseline;
+    }
+    private readonly List<Anchor> _anchors = new();
+    private readonly int[] _wordAnchor;
+    private volatile int _currentWord = -1;
+
     /// <summary>Which strategy ended up being used (for logs).</summary>
     public string Strategy { get; private set; } = "none";
+
+    /// <summary>
+    /// Raised on a background thread when the text moved on screen (scrolling) while
+    /// it is being read. The argument is the offset in physical pixels.
+    /// </summary>
+    public event Action<Vector>? Moved;
 
     private WordLocator(string text)
     {
         _text = text;
         _words = Tokenize(text);
         _rects = new Rect?[_words.Count];
+        _wordAnchor = Enumerable.Repeat(-1, _words.Count).ToArray();
     }
 
     /// <summary>
-    /// Starts locating the words of <paramref name="spokenText"/>.
-    /// Must be called BEFORE the overlay is drawn over the element, because the
-    /// OCR path takes its screenshot synchronously here.
+    /// Starts locating the words of <paramref name="spokenText"/> in the background.
     /// </summary>
     public static WordLocator Start(string spokenText, Rect elementRect,
         AutomationElement? source, CultureInfo? culture, TextPatternRange? range = null)
@@ -53,18 +75,15 @@ public sealed class WordLocator : IDisposable
         var locator = new WordLocator(spokenText);
         if (locator._words.Count == 0) return locator;
 
-        // Take the OCR screenshot now, while the element is still unobstructed.
-        // It's cheap (a single BitBlt) and lets us fall back to OCR later.
-        byte[]? png = null;
-        Rect captureRect = Rect.Empty;
-        try
+        // MagniReader's overlay is excluded from screen captures on Windows 10 2004+,
+        // so the OCR screenshot can wait until OCR is really needed. Older Windows
+        // would capture the dimmed overlay, so take it now there.
+        byte[]? earlyPng = null;
+        Rect earlyRect = Rect.Empty;
+        if (!CaptureExclusionSupported && IsUsableRect(elementRect))
         {
-            if (IsUsableRect(elementRect))
-                (png, captureRect) = CaptureScreen(elementRect);
-        }
-        catch (Exception ex)
-        {
-            System.Diagnostics.Debug.WriteLine($"[WordLocator] Capture failed: {ex.Message}");
+            try { (earlyPng, earlyRect) = CaptureScreen(elementRect); }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[WordLocator] Capture failed: {ex.Message}"); }
         }
 
         var token = locator._cts.Token;
@@ -73,17 +92,32 @@ public sealed class WordLocator : IDisposable
             try
             {
                 bool uiaWorked = false;
-                if (source != null)
+                if (range != null)
+                    uiaWorked = locator.LocateWithLines(range, token);
+                if (!uiaWorked && source != null)
                     uiaWorked = locator.LocateWithTextPattern(source, range, token);
 
-                if (!uiaWorked && png != null && !token.IsCancellationRequested)
-                    await locator.LocateWithOcrAsync(png, captureRect, culture, token);
+                if (!uiaWorked && !token.IsCancellationRequested)
+                {
+                    var (png, captureRect) = (earlyPng, earlyRect);
+                    if (png == null && IsUsableRect(elementRect))
+                        (png, captureRect) = CaptureScreen(elementRect);
+                    if (png != null)
+                    {
+                        await locator.LocateWithOcrAsync(png, captureRect, culture, token);
+                        if (source != null)
+                            locator.AddAnchorForAll(new Anchor { Element = source, Baseline = SafeElementRect(source) });
+                    }
+                }
 
-                Infrastructure.CrashLogger.LogInfo(
+                Infrastructure.CrashLogger.LogTrace(
                     $"[WordLocator] {locator.Strategy}: located " +
                     $"{locator.LocatedCount()}/{locator._rects.Length} words");
+
+                await locator.TrackScrollingAsync(token);
             }
             catch (OperationCanceledException) { }
+            catch (ObjectDisposedException) { }
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine($"[WordLocator] Failed: {ex.Message}");
@@ -92,6 +126,9 @@ public sealed class WordLocator : IDisposable
 
         return locator;
     }
+
+    private static readonly bool CaptureExclusionSupported =
+        Environment.OSVersion.Version.Build >= 19041;
 
     /// <summary>
     /// Returns the on-screen rectangle (physical pixels) of the word that contains
@@ -102,6 +139,7 @@ public sealed class WordLocator : IDisposable
     {
         int index = WordIndexAt(charPosition);
         if (index < 0) return null;
+        _currentWord = index;
         lock (_rects)
             return _rects[index] ?? Interpolate(index);
     }
@@ -162,8 +200,350 @@ public sealed class WordLocator : IDisposable
 
     public void Dispose()
     {
+        Moved = null;
         try { _cts.Cancel(); } catch { }
-        _cts.Dispose();
+        // Not disposing _cts: the background task may still be checking its token.
+    }
+
+    // ─── Scroll tracking ────────────────────────────────────────
+
+    private void AddAnchorForAll(Anchor anchor)
+    {
+        lock (_rects)
+        {
+            _anchors.Add(anchor);
+            int a = _anchors.Count - 1;
+            for (int i = 0; i < _wordAnchor.Length; i++)
+                if (_wordAnchor[i] < 0) _wordAnchor[i] = a;
+        }
+    }
+
+    /// <summary>
+    /// Every 500 ms, re-reads the rectangle of the line (or word, or element) being
+    /// spoken. If it moved, the user scrolled: shift every word box by the same amount.
+    /// One cross-process call per check.
+    /// </summary>
+    private async Task TrackScrollingAsync(CancellationToken token)
+    {
+        while (!token.IsCancellationRequested)
+        {
+            await Task.Delay(500, token);
+
+            Anchor? anchor;
+            lock (_rects)
+            {
+                int w = _currentWord;
+                if (w < 0 || w >= _wordAnchor.Length || _wordAnchor[w] < 0) continue;
+                anchor = _anchors[_wordAnchor[w]];
+            }
+
+            Rect now;
+            try
+            {
+                now = anchor.Range != null ? UnionRect(anchor.Range.GetBoundingRectangles())
+                    : anchor.Element != null ? SafeElementRect(anchor.Element)
+                    : Rect.Empty;
+            }
+            catch { continue; }
+            if (!IsUsableRect(now) || !IsUsableRect(anchor.Baseline)) continue; // scrolled out of view
+
+            var delta = new Vector(now.X - anchor.Baseline.X, now.Y - anchor.Baseline.Y);
+            if (Math.Abs(delta.X) < 2 && Math.Abs(delta.Y) < 2) continue;
+
+            lock (_rects)
+            {
+                for (int i = 0; i < _rects.Length; i++)
+                    if (_rects[i] is Rect r) _rects[i] = Rect.Offset(r, delta);
+                foreach (var a in _anchors)
+                    if (IsUsableRect(a.Baseline)) a.Baseline = Rect.Offset(a.Baseline, delta);
+            }
+            Moved?.Invoke(delta);
+        }
+    }
+
+    private static Rect SafeElementRect(AutomationElement element)
+    {
+        try { return element.Current.BoundingRectangle; }
+        catch { return Rect.Empty; }
+    }
+
+    /// <summary>Union of the usable rectangles, or Empty.</summary>
+    private static Rect UnionRect(Rect[]? rects)
+    {
+        var u = Rect.Empty;
+        if (rects == null) return u;
+        foreach (var r in rects)
+            if (IsUsableRect(r)) u.Union(r);
+        return u;
+    }
+
+    // ─── Strategy 1: UI Automation lines + text measuring ──────
+
+    private sealed class LineInfo
+    {
+        public required TextPatternRange Range;
+        public required string Text;
+        public required Rect Rect;
+        public string? FontName;
+        public double FontSize;
+        public int JoinedStart;
+        public int Anchor;
+    }
+
+    /// <summary>
+    /// Walks the paragraph line by line. Each word is matched to its line in the
+    /// joined line texts (in memory) and placed inside the line's rectangle by
+    /// measuring the text before it with the line's font, scaled to the line's real
+    /// width. Returns false when the app doesn't report lines, or most words can't
+    /// be matched, so the caller can fall back to FindText or OCR.
+    /// </summary>
+    private bool LocateWithLines(TextPatternRange paragraph, CancellationToken token)
+    {
+        TextPatternRange cursor;
+        string? paraFont = null;
+        double paraSize = 0;
+        try
+        {
+            cursor = paragraph.Clone();
+            cursor.MoveEndpointByRange(TextPatternRangeEndpoint.End, cursor, TextPatternRangeEndpoint.Start);
+            (paraFont, paraSize) = ReadFont(paragraph);
+        }
+        catch { return false; }
+
+        Strategy = "UIA lines";
+        var lines = new List<LineInfo>();
+        var joined = new System.Text.StringBuilder();
+        int wordCursor = 0, textCursor = 0, found = 0;
+        bool unsupported = false;
+
+        using var measurer = new TextMeasurer();
+
+        for (int guard = 0; guard < 400; guard++)
+        {
+            token.ThrowIfCancellationRequested();
+            LineInfo line;
+            try
+            {
+                var r = cursor.Clone();
+                r.ExpandToEnclosingUnit(TextUnit.Line);
+                if (r.CompareEndpoints(TextPatternRangeEndpoint.Start, paragraph, TextPatternRangeEndpoint.Start) < 0)
+                    r.MoveEndpointByRange(TextPatternRangeEndpoint.Start, paragraph, TextPatternRangeEndpoint.Start);
+                if (r.CompareEndpoints(TextPatternRangeEndpoint.End, paragraph, TextPatternRangeEndpoint.End) > 0)
+                    r.MoveEndpointByRange(TextPatternRangeEndpoint.End, paragraph, TextPatternRangeEndpoint.End);
+
+                var text = r.GetText(-1) ?? "";
+                var rects = r.GetBoundingRectangles();
+                var rect = UnionRect(rects);
+                // Rectangles on different rows mean the app expanded to more than one
+                // line (no Line unit support): this strategy can't place words.
+                if (rects != null && IsUsableRect(rect) && rects.Where(IsUsableRect).Any(x => x.Top >= rect.Top + x.Height * 0.8))
+                {
+                    unsupported = true;
+                    break;
+                }
+
+                string? fontName = paraFont;
+                double fontSize = paraSize;
+                if (fontName == null || fontSize <= 0)
+                    (fontName, fontSize) = ReadFont(r);
+
+                line = new LineInfo { Range = r, Text = text, Rect = rect, FontName = fontName, FontSize = fontSize, JoinedStart = joined.Length };
+            }
+            catch { break; }
+
+            lock (_rects)
+            {
+                _anchors.Add(new Anchor { Range = line.Range, Baseline = line.Rect });
+                line.Anchor = _anchors.Count - 1;
+            }
+            lines.Add(line);
+            joined.Append(line.Text);
+            // Keep words from running together if the app gives lines without a trailing space
+            if (line.Text.Length > 0 && !char.IsWhiteSpace(line.Text[^1])) joined.Append(' ');
+
+            found += MapWords(lines, joined.ToString(), measurer, ref wordCursor, ref textCursor, final: false);
+
+            int moved;
+            try
+            {
+                moved = cursor.Move(TextUnit.Line, 1);
+                if (moved == 0 ||
+                    cursor.CompareEndpoints(TextPatternRangeEndpoint.Start, paragraph, TextPatternRangeEndpoint.End) >= 0)
+                    break;
+            }
+            catch { break; }
+        }
+
+        found += MapWords(lines, joined.ToString(), measurer, ref wordCursor, ref textCursor, final: true);
+
+        // Mostly unmatched: the lines' text isn't what we're speaking. Let FindText/OCR try.
+        if (unsupported || found < _words.Count * 0.6)
+        {
+            lock (_rects)
+            {
+                Array.Clear(_rects);
+                Array.Fill(_wordAnchor, -1);
+                _anchors.Clear();
+            }
+            Strategy = "none";
+            return false;
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Matches spoken words, in order, to positions in the joined line texts and stores
+    /// their rectangles. Stops at a word that isn't found yet unless enough text follows
+    /// the cursor to be sure it's missing (or <paramref name="final"/>).
+    /// </summary>
+    private int MapWords(List<LineInfo> lines, string joined, TextMeasurer measurer,
+        ref int wordCursor, ref int textCursor, bool final)
+    {
+        const int searchWindow = 120;
+        int found = 0;
+        while (wordCursor < _words.Count)
+        {
+            var (start, length) = _words[wordCursor];
+            var word = _text.Substring(start, length);
+            int limit = Math.Min(joined.Length, textCursor + searchWindow + length);
+            int at = IndexOfWithin(joined, word, textCursor, limit);
+            int len = word.Length;
+            if (at < 0)
+            {
+                var trimmed = word.Trim(TrimChars);
+                if (trimmed.Length > 0)
+                {
+                    at = IndexOfWithin(joined, trimmed, textCursor, limit);
+                    len = trimmed.Length;
+                }
+            }
+
+            if (at < 0)
+            {
+                // Not found yet: wait for the next line, unless there's already enough
+                // text after the cursor that the word must be missing from the page.
+                if (!final && joined.Length - textCursor < searchWindow) break;
+                wordCursor++;
+                continue;
+            }
+
+            var line = lines.FindLast(l => l.JoinedStart <= at)!;
+            int offset = at - line.JoinedStart;
+            var rect = PlaceInLine(line, offset, Math.Min(len, Math.Max(0, line.Text.Length - offset)), measurer);
+            if (rect.HasValue)
+            {
+                lock (_rects)
+                {
+                    _rects[wordCursor] = rect;
+                    _wordAnchor[wordCursor] = line.Anchor;
+                }
+                found++;
+            }
+            textCursor = at + len;
+            wordCursor++;
+        }
+        return found;
+    }
+
+    private static int IndexOfWithin(string haystack, string needle, int from, int limit)
+    {
+        if (needle.Length == 0 || from >= haystack.Length) return -1;
+        int count = Math.Min(haystack.Length, limit) - from;
+        if (count < needle.Length) return -1;
+        return haystack.IndexOf(needle, from, count, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Rectangle of the characters [offset, offset+length) inside a line, by measuring
+    /// with the line's font and scaling to the line's real on-screen width.
+    /// Falls back to an even split by characters when the font isn't known.
+    /// </summary>
+    private static Rect? PlaceInLine(LineInfo line, int offset, int length, TextMeasurer measurer)
+    {
+        if (!IsUsableRect(line.Rect) || length <= 0) return null;
+
+        // The rectangle covers the visible glyphs: ignore leading/trailing whitespace.
+        var text = line.Text;
+        int lead = 0;
+        while (lead < text.Length && char.IsWhiteSpace(text[lead])) lead++;
+        int end = text.Length;
+        while (end > lead && char.IsWhiteSpace(text[end - 1])) end--;
+        if (end <= lead) return null;
+        var visible = text.Substring(lead, end - lead);
+        int o = Math.Clamp(offset - lead, 0, visible.Length);
+        int l = Math.Clamp(length, 1, visible.Length - o);
+        if (l <= 0) return null;
+
+        double before, through, total;
+        if (measurer.TryMeasure(line.FontName, line.FontSize, visible, out total) &&
+            measurer.TryMeasure(line.FontName, line.FontSize, visible[..o], out before) &&
+            measurer.TryMeasure(line.FontName, line.FontSize, visible[..(o + l)], out through) &&
+            total > 0)
+        {
+            double scale = line.Rect.Width / total;
+            return new Rect(line.Rect.Left + before * scale, line.Rect.Top,
+                Math.Max(4, (through - before) * scale), line.Rect.Height);
+        }
+
+        double unit = line.Rect.Width / visible.Length;
+        return new Rect(line.Rect.Left + o * unit, line.Rect.Top, Math.Max(4, l * unit), line.Rect.Height);
+    }
+
+    private static (string? name, double size) ReadFont(TextPatternRange range)
+    {
+        string? name = null;
+        double size = 0;
+        try
+        {
+            if (range.GetAttributeValue(TextPattern.FontNameAttribute) is string n && n.Length > 0) name = n;
+            if (range.GetAttributeValue(TextPattern.FontSizeAttribute) is double d && d > 0) size = d;
+        }
+        catch { }
+        return (name, size);
+    }
+
+    /// <summary>Measures text widths with GDI+ (thread-safe per instance, works off the UI thread).</summary>
+    private sealed class TextMeasurer : IDisposable
+    {
+        private readonly System.Drawing.Bitmap _bmp = new(1, 1);
+        private readonly System.Drawing.Graphics _g;
+        private readonly System.Drawing.StringFormat _format;
+        private readonly Dictionary<(string, double), System.Drawing.Font?> _fonts = new();
+
+        public TextMeasurer()
+        {
+            _g = System.Drawing.Graphics.FromImage(_bmp);
+            _format = (System.Drawing.StringFormat)System.Drawing.StringFormat.GenericTypographic.Clone();
+            _format.FormatFlags |= System.Drawing.StringFormatFlags.MeasureTrailingSpaces;
+        }
+
+        public bool TryMeasure(string? fontName, double sizePt, string text, out double width)
+        {
+            width = 0;
+            if (text.Length == 0) return true;
+            if (fontName == null || sizePt <= 0) return false;
+            if (!_fonts.TryGetValue((fontName, sizePt), out var font))
+            {
+                try { font = new System.Drawing.Font(fontName, (float)sizePt, System.Drawing.GraphicsUnit.Point); }
+                catch { font = null; }
+                _fonts[(fontName, sizePt)] = font;
+            }
+            if (font == null) return false;
+            try
+            {
+                width = _g.MeasureString(text, font, new System.Drawing.PointF(0, 0), _format).Width;
+                return true;
+            }
+            catch { return false; }
+        }
+
+        public void Dispose()
+        {
+            foreach (var f in _fonts.Values) f?.Dispose();
+            _format.Dispose();
+            _g.Dispose();
+            _bmp.Dispose();
+        }
     }
 
     // ─── Tokenizing ─────────────────────────────────────────────
@@ -202,7 +582,7 @@ public sealed class WordLocator : IDisposable
         return found;
     }
 
-    // ─── Strategy 1: UI Automation TextPattern ──────────────────
+    // ─── Strategy 2: UI Automation FindText ──────────────────
 
     /// <summary>
     /// Walks the spoken words in order and finds each one in the element's text
@@ -229,7 +609,7 @@ public sealed class WordLocator : IDisposable
         }
         catch { return false; }
 
-        Strategy = "UIA TextPattern";
+        Strategy = "UIA FindText";
         int found = 0, misses = 0;
 
         for (int i = 0; i < _words.Count; i++)
@@ -266,7 +646,12 @@ public sealed class WordLocator : IDisposable
             var rect = FirstUsableRect(match);
             if (rect.HasValue)
             {
-                lock (_rects) _rects[i] = rect;
+                lock (_rects)
+                {
+                    _rects[i] = rect;
+                    _anchors.Add(new Anchor { Range = match, Baseline = rect.Value });
+                    _wordAnchor[i] = _anchors.Count - 1;
+                }
                 found++;
             }
 
@@ -300,7 +685,7 @@ public sealed class WordLocator : IDisposable
         return null;
     }
 
-    // ─── Strategy 2: OCR ────────────────────────────────────────
+    // ─── Strategy 3: OCR ────────────────────────────────────────
 
     private async Task LocateWithOcrAsync(byte[] png, Rect captureRect, CultureInfo? culture, CancellationToken token)
     {
@@ -368,7 +753,7 @@ public sealed class WordLocator : IDisposable
         }
     }
 
-    private static OcrEngine? CreateOcrEngine(CultureInfo? culture)
+    internal static OcrEngine? CreateOcrEngine(CultureInfo? culture)
     {
         try
         {
@@ -437,7 +822,7 @@ public sealed class WordLocator : IDisposable
     /// because Windows OCR is much more accurate on larger glyphs.
     /// Returns the PNG and the screen rect it covers (physical pixels).
     /// </summary>
-    private static (byte[] png, Rect rect) CaptureScreen(Rect elementRect)
+    internal static (byte[] png, Rect rect) CaptureScreen(Rect elementRect)
     {
         // Virtual screen bounds in physical pixels (the app is PerMonitorV2 aware)
         int vsLeft = Helpers.NativeInterop.GetSystemMetrics(Helpers.NativeInterop.SM_XVIRTUALSCREEN);

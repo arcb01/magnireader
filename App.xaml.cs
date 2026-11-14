@@ -53,6 +53,23 @@ public partial class App : Application
 
     // Finds the on-screen position of each word of the element being read
     private WordLocator? _wordLocator;
+    private Rect _currentElementRect = Rect.Empty;
+
+    // UI Automation runs on these worker threads, never on the UI thread (which would
+    // freeze MagniReader's windows while a slow app answers). One for what the user is
+    // waiting on (click, hover, selection), one for collecting the following paragraphs.
+    private readonly UiaWorker _uia = new();
+    private readonly UiaWorker _uiaBackground = new();
+    private static readonly TimeSpan UiaTimeout = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan HoverTimeout = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan SiblingsTimeout = TimeSpan.FromSeconds(20);
+
+    // Bumped by every new reading and every stop. Async work (extraction, collecting
+    // the next paragraphs) captures it and drops its result if it changed meanwhile,
+    // so a slow previous click can never add its text to a newer reading.
+    private int _readingSession;
+    // Same idea for the hover preview: only the latest mouse position is shown.
+    private int _hoverSeq;
 
     // Continuous reading queue
     private List<TextExtractor.TextElement> _readingQueue = new();
@@ -148,6 +165,7 @@ public partial class App : Application
         _inputManager.ReadTriggered += OnReadTriggered;
         _inputManager.CancelTriggered += OnCancelTriggered;
         _inputManager.SnipTriggered += OnSnipTriggered;
+        _inputManager.ReadSelectionTriggered += OnReadSelectionTriggered;
         _inputManager.HoverPreview += OnHoverPreview;
         _inputManager.HoverEnd += OnHoverEnd;
         _inputManager.PickModeChanged += armed => _controlBar?.SetPickArmed(armed);
@@ -166,6 +184,8 @@ public partial class App : Application
 
         // Setup tray icon
         SetupTrayIcon();
+        AddReadingTrayItems();
+        UpdateTrayTooltip();
 
         // Compact control bar (like the Magnifier toolbar)
         SetupControlBar();
@@ -211,7 +231,7 @@ public partial class App : Application
         {
             _trayIcon?.ShowBalloonTip(
                 "MagniReader Ready!",
-                "Ctrl+Alt+Click on any text to read it aloud.\n" +
+                $"{ReadClickText} on any text to read it aloud.\n" +
                 "Natural voices detected ⭐",
                 BalloonIcon.Info);
         }
@@ -414,7 +434,7 @@ public partial class App : Application
             _toldAboutTray = true;
             _trayIcon?.ShowBalloonTip(
                 "MagniReader is still running",
-                "Ctrl+Alt+Click still reads text.\nDouble-click the tray icon to bring the bar back.",
+                $"{ReadClickText} still reads text.\nDouble-click the tray icon to bring the bar back.",
                 BalloonIcon.Info);
         }
     }
@@ -441,8 +461,59 @@ public partial class App : Application
         RefreshControlBar();
     }
 
+    /// <summary>Text for tooltips and tips, e.g. "Ctrl+Alt+Click".</summary>
+    private string ReadClickText => _inputManager?.ReadHotkey.ToClickText() ?? "Ctrl+Alt+Click";
+
+    private void UpdateTrayTooltip()
+    {
+        if (_trayIcon != null && !_isReading)
+            _trayIcon.ToolTipText = $"MagniReader — {ReadClickText} to read";
+    }
+
     /// <summary>
-    /// Called when Ctrl+Alt+Click is detected. Receives click coordinates.
+    /// Tray items for reading the clipboard and for diagnostic logging. Added after the
+    /// tray menu is built, just above "View Crash Logs".
+    /// </summary>
+    private void AddReadingTrayItems()
+    {
+        if (_trayIcon?.ContextMenu is not { } menu || _settingsStore == null) return;
+
+        var readClipboard = new System.Windows.Controls.MenuItem { Header = "📋 Read selection or clipboard" };
+        readClipboard.Click += (s, e) => OnReadSelectionTriggered();
+        menu.Opened += (s, e) =>
+            readClipboard.InputGestureText = _inputManager?.ReadSelectionHotkey.ToString() ?? "";
+
+        var diagnostics = new System.Windows.Controls.MenuItem
+        {
+            Header = "Diagnostic logging",
+            IsCheckable = true,
+            IsChecked = _settingsStore.Settings.DiagnosticLogging,
+            ToolTip = "Write detailed speech timings to the log file, to send with a bug report. " +
+                      "The text being read is never logged.",
+        };
+        diagnostics.Click += (s, e) =>
+        {
+            _settingsStore.Settings.DiagnosticLogging = diagnostics.IsChecked;
+            CrashLogger.DiagnosticsEnabled = diagnostics.IsChecked;
+            _settingsStore.Save();
+        };
+
+        // Insert before the first separator (reading items) and before the last one (logs)
+        int firstSeparator = -1, lastSeparator = -1;
+        for (int i = 0; i < menu.Items.Count; i++)
+        {
+            if (menu.Items[i] is not System.Windows.Controls.Separator) continue;
+            if (firstSeparator < 0) firstSeparator = i;
+            lastSeparator = i;
+        }
+        if (lastSeparator >= 0) menu.Items.Insert(lastSeparator, diagnostics);
+        else menu.Items.Add(diagnostics);
+        if (firstSeparator >= 0) menu.Items.Insert(firstSeparator, readClipboard);
+        else menu.Items.Insert(0, readClipboard);
+    }
+
+    /// <summary>
+    /// Called when the read shortcut + click (or a pick) is detected, with click coordinates.
     /// </summary>
     private void OnReadTriggered(int clickX, int clickY)
     {
@@ -453,8 +524,9 @@ public partial class App : Application
         }
 
         // Hide hover highlight when starting to read
+        _hoverSeq++;
         _hoverHighlight?.HideHighlight();
-        StartReading(clickX, clickY);
+        _ = StartReadingAsync(clickX, clickY);
     }
 
     // ─── Hover Preview ──────────────────────────────────────────
@@ -468,81 +540,107 @@ public partial class App : Application
         // Don't highlight the control bar's own buttons while pick mode is armed.
         if (_controlBar?.ContainsScreenPoint(x, y) == true)
         {
+            _hoverSeq++;
             _lastHoverRect = Rect.Empty;
             _hoverHighlight?.HideHighlight();
             return;
         }
 
+        int seq = ++_hoverSeq;
+        _ = HoverPreviewAsync(x, y, seq);
+    }
+
+    private async Task HoverPreviewAsync(int x, int y, int seq)
+    {
+        (Rect rect, string text) found;
         try
         {
-            var point = new System.Windows.Point(x, y);
-            var element = System.Windows.Automation.AutomationElement.FromPoint(point);
-            if (element == null)
+            found = await _uia.RunAsync(() =>
             {
-                _hoverHighlight?.HideHighlight();
-                return;
-            }
+                // A newer mouse position is already queued: skip this one.
+                if (Volatile.Read(ref _hoverSeq) != seq) return (Rect.Empty, "");
 
-            var rect = element.Current.BoundingRectangle;
-            if (rect == Rect.Empty || rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
-            {
-                _hoverHighlight?.HideHighlight();
-                return;
-            }
+                var element = System.Windows.Automation.AutomationElement.FromPoint(new System.Windows.Point(x, y));
+                if (element == null) return (Rect.Empty, "");
+                var rect = element.Current.BoundingRectangle;
+                if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0) return (Rect.Empty, "");
 
-            // Skip if we're still on the same element (avoid flicker)
-            if (rect == _lastHoverRect) return;
-            _lastHoverRect = rect;
-
-            // Try to get text from this element
-            string text = "";
-            try
-            {
-                text = element.Current.Name ?? "";
-                if (string.IsNullOrWhiteSpace(text))
+                string text = "";
+                try
                 {
-                    // Try ValuePattern
-                    if (element.TryGetCurrentPattern(
-                        System.Windows.Automation.ValuePattern.Pattern, out var pattern))
+                    text = element.Current.Name ?? "";
+                    if (string.IsNullOrWhiteSpace(text) &&
+                        element.TryGetCurrentPattern(System.Windows.Automation.ValuePattern.Pattern, out var pattern))
                     {
                         text = ((System.Windows.Automation.ValuePattern)pattern).Current.Value ?? "";
                     }
                 }
-            }
-            catch { }
-
-            if (string.IsNullOrWhiteSpace(text))
-            {
-                _hoverHighlight?.HideHighlight();
-                _lastHoverRect = Rect.Empty;
-                return;
-            }
-
-            // Show highlight
-            _hoverHighlight?.HighlightElement(rect, text);
+                catch { }
+                return (rect, text);
+            }, HoverTimeout);
         }
         catch (Exception ex)
         {
             System.Diagnostics.Debug.WriteLine($"[App] Hover error: {ex.Message}");
-            _hoverHighlight?.HideHighlight();
+            found = (Rect.Empty, "");
         }
+
+        // Back on the UI thread. Drop stale results (mouse moved on, keys released, reading started).
+        if (seq != _hoverSeq || _isReading) return;
+
+        if (found.rect.IsEmpty || string.IsNullOrWhiteSpace(found.text))
+        {
+            _lastHoverRect = Rect.Empty;
+            _hoverHighlight?.HideHighlight();
+            return;
+        }
+
+        // Skip if we're still on the same element (avoid flicker)
+        if (found.rect == _lastHoverRect) return;
+        _lastHoverRect = found.rect;
+        _hoverHighlight?.HighlightElement(found.rect, found.text);
     }
 
     private void OnHoverEnd()
     {
+        _hoverSeq++;
         _lastHoverRect = Rect.Empty;
         _hoverHighlight?.HideHighlight();
     }
 
-    private void StartReading(int clickX, int clickY)
+    private async Task StartReadingAsync(int clickX, int clickY)
     {
+        int session = ++_readingSession;
         var pipelineSw = Stopwatch.StartNew();
         try
         {
-            // FAST PATH: Extract only the first element (skips sibling traversal)
-            var (firstElement, extractionContext) = _textExtractor!.ExtractFirstElementAtPoint(clickX, clickY);
-            System.Diagnostics.Debug.WriteLine(
-                $"[App] ⏱ Fast text extraction: {pipelineSw.ElapsedMilliseconds}ms");
+            // FAST PATH: Extract only the first element (siblings are collected later)
+            TextExtractor.TextElement? firstElement;
+            TextExtractor.ExtractionContext? extractionContext;
+            try
+            {
+                (firstElement, extractionContext) = await _uia.RunAsync(
+                    () => _textExtractor!.ExtractFirstElementAtPoint(clickX, clickY), UiaTimeout);
+            }
+            catch (TimeoutException)
+            {
+                if (session != _readingSession) return;
+                _trayIcon?.ShowBalloonTip("MagniReader",
+                    "That app isn't responding, so its text can't be read right now.", BalloonIcon.Warning);
+                return;
+            }
+            if (session != _readingSession) return; // the user clicked again or stopped meanwhile
+            System.Diagnostics.Debug.WriteLine($"[App] ⏱ Fast text extraction: {pipelineSw.ElapsedMilliseconds}ms");
+
+            // Nothing exposed through UI Automation: try reading the screen with OCR.
+            if (firstElement == null || string.IsNullOrWhiteSpace(firstElement.Text))
+            {
+                extractionContext = null;
+                firstElement = await Task.Run(() => OcrReader.ReadParagraphAtAsync(clickX, clickY));
+                if (session != _readingSession) return;
+                if (firstElement != null)
+                    CrashLogger.LogTrace($"[App] OCR fallback: {firstElement.Text.Length} chars in {pipelineSw.ElapsedMilliseconds}ms");
+            }
 
             if (firstElement == null || string.IsNullOrWhiteSpace(firstElement.Text))
             {
@@ -553,56 +651,124 @@ public partial class App : Application
                 return;
             }
 
-            // Start with just the first element — speak immediately
-            _playbackStripShown = false;
-            _readingQueue = new List<TextExtractor.TextElement> { firstElement };
-            _readingCulture = null;
-            _readingIndex = 0;
+            BeginReading(new List<TextExtractor.TextElement> { firstElement }, session, pipelineSw);
 
-            _isReading = true;
-            _inputManager!.SetReadingState(true);
-            _controlBar?.SetReading(true);
-
-            System.Diagnostics.Debug.WriteLine(
-                $"[App] Starting reading first element immediately (siblings deferred)");
-
-            // Start reading the first element NOW — before collecting siblings
-            ReadCurrentElement(showOverlay: true, pipelineSw);
-
-            // Collect siblings in the background while speech is already playing
+            // Collect the following paragraphs in the background while speech is already playing
             if (extractionContext != null)
-            {
-                _ = Task.Run(() =>
-                {
-                    var siblingsSw = Stopwatch.StartNew();
-                    var siblings = _textExtractor.CollectSiblingsFromContext(extractionContext);
-                    System.Diagnostics.Debug.WriteLine(
-                        $"[App] ⏱ Deferred sibling collection: {siblingsSw.ElapsedMilliseconds}ms, found {siblings.Count} sibling(s)");
-
-                    if (siblings.Count > 0)
-                    {
-                        Dispatcher.BeginInvoke(() =>
-                        {
-                            if (_isReading)
-                            {
-                                _readingQueue.AddRange(siblings.Where(e => !string.IsNullOrWhiteSpace(e.Text)));
-                                System.Diagnostics.Debug.WriteLine(
-                                    $"[App] Reading queue updated: {_readingQueue.Count} total element(s)");
-                            }
-                        });
-                    }
-                });
-            }
+                _ = CollectFollowingAsync(extractionContext, session);
         }
         catch (Exception ex)
         {
             CrashLogger.LogError($"Reading failed at ({clickX},{clickY})", ex);
-            StopReading();
+            if (session == _readingSession) StopReading();
         }
+    }
+
+    /// <summary>Starts reading a queue of elements (the first one right away).</summary>
+    private void BeginReading(List<TextExtractor.TextElement> queue, int session, Stopwatch? pipelineSw)
+    {
+        _playbackStripShown = false;
+        _readingQueue = queue;
+        _readingCulture = null;
+        _readingIndex = 0;
+        _readingSession = session;
+
+        _isReading = true;
+        _inputManager!.SetReadingState(true);
+        _controlBar?.SetReading(true);
+
+        ReadCurrentElement(showOverlay: true, pipelineSw);
+    }
+
+    private async Task CollectFollowingAsync(TextExtractor.ExtractionContext context, int session)
+    {
+        try
+        {
+            var sw = Stopwatch.StartNew();
+            var siblings = await _uiaBackground.RunAsync(
+                () => _textExtractor!.CollectSiblingsFromContext(context), SiblingsTimeout);
+            System.Diagnostics.Debug.WriteLine(
+                $"[App] ⏱ Deferred sibling collection: {sw.ElapsedMilliseconds}ms, found {siblings.Count} sibling(s)");
+
+            // Back on the UI thread: only add them to the reading they were collected for.
+            if (_isReading && session == _readingSession && siblings.Count > 0)
+            {
+                _readingQueue.AddRange(siblings.Where(e => !string.IsNullOrWhiteSpace(e.Text)));
+                System.Diagnostics.Debug.WriteLine($"[App] Reading queue updated: {_readingQueue.Count} total element(s)");
+            }
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[App] Sibling collection failed: {ex.Message}");
+        }
+    }
+
+    // ─── Read selection / clipboard ─────────────────────────────
+
+    private async void OnReadSelectionTriggered()
+    {
+        if (_isReading) StopReading();
+        int session = ++_readingSession;
+        _hoverSeq++;
+        _hoverHighlight?.HideHighlight();
+
+        try
+        {
+            TextExtractor.TextElement? selection = null;
+            try
+            {
+                selection = await _uia.RunAsync(() => _textExtractor!.ExtractSelection(), UiaTimeout);
+            }
+            catch (TimeoutException) { }
+            if (session != _readingSession) return;
+
+            List<TextExtractor.TextElement> queue;
+            if (selection != null)
+            {
+                queue = new() { selection };
+            }
+            else
+            {
+                // No selection visible to UI Automation: read what's on the clipboard.
+                string clip = "";
+                try { if (Clipboard.ContainsText()) clip = Clipboard.GetText(); }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[App] Clipboard busy: {ex.Message}"); }
+                queue = SplitIntoParagraphs(clip);
+            }
+
+            if (queue.Count == 0)
+            {
+                _trayIcon?.ShowBalloonTip("MagniReader",
+                    "Select some text (or copy it), then press " +
+                    $"{_inputManager?.ReadSelectionHotkey} again.", BalloonIcon.Info);
+                return;
+            }
+
+            BeginReading(queue, session, null);
+        }
+        catch (Exception ex)
+        {
+            CrashLogger.LogError("Reading the selection failed", ex);
+            if (session == _readingSession) StopReading();
+        }
+    }
+
+    /// <summary>Splits clipboard text at blank lines, so long text is read paragraph by paragraph.</summary>
+    private static List<TextExtractor.TextElement> SplitIntoParagraphs(string text)
+    {
+        const int maxChars = 50_000;
+        if (text.Length > maxChars) text = text[..maxChars];
+        return System.Text.RegularExpressions.Regex.Split(text.Replace("\r\n", "\n"), @"\n\s*\n")
+            .Select(p => System.Text.RegularExpressions.Regex.Replace(p, @"\s+", " ").Trim())
+            .Where(p => p.Any(char.IsLetterOrDigit))
+            .Select(p => new TextExtractor.TextElement { Text = p, BoundingRect = Rect.Empty })
+            .ToList();
     }
 
     private void StopReading()
     {
+        // Invalidate any extraction or paragraph collection still running.
+        _readingSession++;
         if (!_isReading) return; // Already stopped — no double-processing
 
         System.Diagnostics.Debug.WriteLine("[App] StopReading");
@@ -618,15 +784,23 @@ public partial class App : Application
 
         _wordLocator?.Dispose();
         _wordLocator = null;
+        _currentElementRect = Rect.Empty;
 
-        if (_trayIcon != null)
-            _trayIcon.ToolTipText = "MagniReader — Ctrl+Alt+Click to read";
+        UpdateTrayTooltip();
     }
 
     private void OnCancelTriggered()
     {
         System.Diagnostics.Debug.WriteLine("[App] Cancel triggered");
         StopReading();
+    }
+
+    /// <summary>The user scrolled while reading: move the highlighted box with the text.</summary>
+    private void OnReadingTextMoved(WordLocator locator, Vector delta)
+    {
+        if (!_isReading || !ReferenceEquals(locator, _wordLocator) || _currentElementRect.IsEmpty) return;
+        _currentElementRect = Rect.Offset(_currentElementRect, delta);
+        _overlay?.MoveToElement(_currentElementRect, _currentReadingText);
     }
 
     private void OnWordReached(int charPosition, int charLength)
@@ -684,27 +858,28 @@ public partial class App : Application
 
         // Overlay and tray update (non-blocking)
         var rect = element.BoundingRect;
-        if (rect == Rect.Empty || rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0)
-        {
-            rect = new Rect(
-                SystemParameters.VirtualScreenWidth / 4,
-                SystemParameters.VirtualScreenHeight / 4,
-                SystemParameters.VirtualScreenWidth / 2,
-                SystemParameters.VirtualScreenHeight / 2);
-        }
+        bool onScreen = !(rect == Rect.Empty || rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0);
 
-        // Start locating each word on screen. This must happen before the overlay
-        // is drawn over the element (the OCR fallback takes a screenshot now).
         _wordLocator?.Dispose();
-        _wordLocator = WordLocator.Start(_currentReadingText, element.BoundingRect, element.Source, culture, element.Range);
+        _wordLocator = null;
+        _currentElementRect = onScreen ? rect : Rect.Empty;
 
-        if (showOverlay)
+        if (onScreen)
         {
-            _overlay!.ShowOverlay(rect, _currentReadingText, culture.EnglishName);
+            // Locate each word on screen in the background (follows scrolling too)
+            var locator = WordLocator.Start(_currentReadingText, rect, element.Source, culture, element.Range);
+            locator.Moved += delta => Dispatcher.BeginInvoke(() => OnReadingTextMoved(locator, delta));
+            _wordLocator = locator;
+
+            if (showOverlay)
+                _overlay!.ShowOverlay(rect, _currentReadingText, culture.EnglishName);
+            else
+                _overlay!.MoveToElement(rect, _currentReadingText);
         }
         else
         {
-            _overlay!.MoveToElement(rect, _currentReadingText);
+            // Text that isn't on screen (clipboard): just speak it, no dimming.
+            _overlay?.HideOverlay();
         }
 
         _trayIcon!.ToolTipText = $"MagniReader — Reading ({culture.EnglishName}) [{_readingIndex + 1}/{_readingQueue.Count}]...";
@@ -726,7 +901,7 @@ public partial class App : Application
 
         var detected = _langDetector!.DetectLanguage(text);
         if (_readingCulture == null || detected.TwoLetterISOLanguageName != _readingCulture.TwoLetterISOLanguageName)
-            CrashLogger.LogInfo($"[App] Reading language: {detected.Name} ({letters} letters)");
+            CrashLogger.LogTrace($"[App] Reading language: {detected.Name} ({letters} letters)");
         _readingCulture = detected;
         return detected;
     }
@@ -740,6 +915,9 @@ public partial class App : Application
 
     private void ApplySettings(AppSettings settings)
     {
+        CrashLogger.DiagnosticsEnabled = settings.DiagnosticLogging;
+        _inputManager?.ApplyHotkeys(settings.ReadHotkey, settings.SnipHotkey, settings.ReadSelectionHotkey);
+        UpdateTrayTooltip();
         _speechEngine?.SetRate(settings.SpeechRate);
         _speechEngine?.SetVolume(settings.Volume);
         _speechEngine?.ConfigureKokoro(settings);
@@ -833,6 +1011,8 @@ public partial class App : Application
         _updateService?.ApplyOnExitIfPending();
         _trayIcon?.Dispose();
         _inputManager?.Dispose();
+        _uia.Dispose();
+        _uiaBackground.Dispose();
         _speechEngine?.Dispose();
         _voiceManager?.Dispose();
         _visionAnalyzer?.Dispose();
@@ -909,6 +1089,22 @@ public partial class App : Application
             var provider = settings.VisionProvider.Equals("OpenAI", StringComparison.OrdinalIgnoreCase)
                 ? VisionAnalyzer.Provider.OpenAI
                 : VisionAnalyzer.Provider.Gemini;
+
+            // Screenshots can contain private information: ask once before uploading any.
+            if (!string.IsNullOrWhiteSpace(settings.VisionApiKey) && !settings.VisionUploadConsent)
+            {
+                var company = provider == VisionAnalyzer.Provider.OpenAI ? "OpenAI" : "Google (Gemini)";
+                var answer = MessageBox.Show(
+                    $"To describe this area, MagniReader sends the screenshot to {company}.\n\n" +
+                    "It may contain private information (emails, names, documents). It is sent only " +
+                    "when you snip, using your own API key, and is handled under that provider's terms.\n\n" +
+                    "Send screenshots to describe them? You won't be asked again.",
+                    "Send screenshot?",
+                    MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No);
+                if (answer != MessageBoxResult.Yes) return;
+                settings.VisionUploadConsent = true;
+                _settingsStore!.Save();
+            }
 
             // Show result window with loading state
             var resultWindow = new VisionResultWindow(_speechEngine, _langDetector);
