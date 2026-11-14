@@ -91,6 +91,9 @@ public class AppSettings
     /// <summary>Whether to launch on Windows startup.</summary>
     public bool LaunchOnStartup { get; set; } = false;
 
+    /// <summary>Check GitHub for a new version in the background and install it on restart.</summary>
+    public bool AutoCheckUpdates { get; set; } = true;
+
     /// <summary>
     /// Voice priority per language. Key = language code (e.g. "en", "es").
     /// Value = ordered list of voice names, highest priority first.

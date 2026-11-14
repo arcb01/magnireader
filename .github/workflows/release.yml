@@ -1,0 +1,82 @@
+name: Release
+
+# Builds MagniReader, packages it with Velopack and publishes a GitHub Release.
+# Installed copies of the app check these releases and update themselves.
+#
+# To release: push a tag like v1.2.0
+#   git tag v1.2.0 && git push origin v1.2.0
+# or run this workflow by hand from the Actions tab and type the version.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release, e.g. 1.2.0 (no "v")'
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    env:
+      VPK_VERSION: '1.2.161' # keep in step with the Velopack package in MagniReader.csproj
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Work out the version
+        shell: pwsh
+        run: |
+          if ('${{ github.event_name }}' -eq 'workflow_dispatch') { $v = '${{ inputs.version }}' }
+          else { $v = '${{ github.ref_name }}' }
+          $v = $v.Trim().TrimStart('v')
+          if ($v -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$') { throw "'$v' is not a version like 1.2.0" }
+          "VERSION=$v" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "Releasing $v"
+
+      # Self-contained: users don't need to install the .NET runtime first.
+      - name: Publish
+        run: dotnet publish MagniReader.csproj -c Release -r win-x64 --self-contained true -p:Version=${{ env.VERSION }} -o publish
+
+      - name: Install vpk
+        run: dotnet tool install -g vpk --version ${{ env.VPK_VERSION }}
+
+      # Fetch the previous release so vpk can build a small delta update from it.
+      # Fails harmlessly on the very first release.
+      - name: Download previous release
+        continue-on-error: true
+        run: vpk download github --repoUrl https://github.com/${{ github.repository }} --channel win --token ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pack installer and update packages
+        run: >
+          vpk pack
+          --packId MagniReader
+          --packVersion ${{ env.VERSION }}
+          --packDir publish
+          --mainExe MagniReader.exe
+          --packTitle MagniReader
+          --packAuthors arcb01
+          --icon app.ico
+          --shortcuts Desktop,StartMenuRoot
+
+      - name: Upload to GitHub Releases
+        run: >
+          vpk upload github
+          --repoUrl https://github.com/${{ github.repository }}
+          --channel win
+          --token ${{ secrets.GITHUB_TOKEN }}
+          --publish
+          --releaseName "MagniReader ${{ env.VERSION }}"
+          --tag v${{ env.VERSION }}
+          --targetCommitish ${{ github.sha }}

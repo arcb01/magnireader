@@ -12,6 +12,7 @@ public partial class SettingsWindow : Window
     private readonly SettingsStore _settingsStore;
     private readonly VoiceManager _voiceManager;
     private readonly Action<AppSettings> _onSettingsSaved;
+    private readonly UpdateService _updateService;
     private readonly Dictionary<string, List<string>> _workingPriorities = new();
 
     private readonly (string color, string text)[] _themes = new[]
@@ -23,11 +24,13 @@ public partial class SettingsWindow : Window
         ("#FFFF00", "#000000"),
     };
 
-    public SettingsWindow(SettingsStore settingsStore, VoiceManager voiceManager, Action<AppSettings> onSettingsSaved)
+    public SettingsWindow(SettingsStore settingsStore, VoiceManager voiceManager, Action<AppSettings> onSettingsSaved,
+        UpdateService updateService)
     {
         _settingsStore = settingsStore;
         _voiceManager = voiceManager;
         _onSettingsSaved = onSettingsSaved;
+        _updateService = updateService;
         InitializeComponent();
         SetWindowIcon();
         LoadSettings();
@@ -60,6 +63,7 @@ public partial class SettingsWindow : Window
         }
 
         LoadKokoroSettings(s);
+        LoadAppSettings(s);
 
         // Vision settings
         VisionProviderCombo.SelectedIndex = s.VisionProvider.Equals("OpenAI", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
@@ -332,6 +336,11 @@ public partial class SettingsWindow : Window
         s.VisionProvider = VisionProviderCombo.SelectedIndex == 1 ? "OpenAI" : "Gemini";
         s.VisionApiKey = _apiKeyValue;
 
+        // Startup + updates
+        s.LaunchOnStartup = LaunchOnStartupCheckBox.IsChecked == true;
+        s.AutoCheckUpdates = AutoUpdateCheckBox.IsChecked == true;
+        StartupManager.Set(s.LaunchOnStartup);
+
         _settingsStore.Save();
         _onSettingsSaved(s);
         _voiceManager.LoadPriorities(s);
@@ -470,6 +479,61 @@ public partial class SettingsWindow : Window
     }
 
     private static SolidColorBrush Brush(byte r, byte g, byte b) => new(Color.FromRgb(r, g, b));
+
+    // ─── Startup & updates ───────────────────────────────────
+
+    private void LoadAppSettings(AppSettings s)
+    {
+        // The registry is the truth: the user may have turned it off in Task Manager → Startup apps.
+        LaunchOnStartupCheckBox.IsChecked = s.LaunchOnStartup && StartupManager.IsEnabled;
+        AutoUpdateCheckBox.IsChecked = s.AutoCheckUpdates;
+        VersionText.Text = $"MagniReader {_updateService.CurrentVersion}";
+
+        if (!_updateService.IsInstalled)
+        {
+            AutoUpdateCheckBox.IsEnabled = false;
+            CheckUpdatesBtn.IsEnabled = false;
+            UpdateStatusText.Text = "Updates are only available in the installed version (MagniReader-win-Setup.exe from the GitHub releases page).";
+        }
+        else if (_updateService.PendingVersion is string pending)
+        {
+            ShowUpdateReady(pending);
+        }
+    }
+
+    private async void CheckUpdates_Click(object sender, RoutedEventArgs e)
+    {
+        CheckUpdatesBtn.IsEnabled = false;
+        UpdateStatusText.Text = "Checking for updates…";
+        var result = await _updateService.CheckAndDownloadAsync();
+        CheckUpdatesBtn.IsEnabled = true;
+        UpdateStatusText.Text = result switch
+        {
+            UpdateService.CheckResult.UpToDate => $"✓ You have the latest version ({_updateService.CurrentVersion}).",
+            UpdateService.CheckResult.Failed => "⚠ Couldn't reach GitHub. Check your connection and try again.",
+            UpdateService.CheckResult.NotInstalled => "Updates are only available in the installed version.",
+            _ => UpdateStatusText.Text,
+        };
+        if (result == UpdateService.CheckResult.UpdateReady && _updateService.PendingVersion is string v)
+            ShowUpdateReady(v);
+    }
+
+    private void ShowUpdateReady(string version)
+    {
+        UpdateStatusText.Text = $"⬆ Version {version} is downloaded and ready to install.";
+        RestartToUpdateBtn.Content = $"⬆ Restart to update (v{version})";
+        RestartToUpdateBtn.Visibility = Visibility.Visible;
+    }
+
+    private void RestartToUpdate_Click(object sender, RoutedEventArgs e)
+    {
+        Close();
+        // Same path as the tray menu item, which also releases hooks and the tray icon first.
+        RestartRequested?.Invoke();
+    }
+
+    /// <summary>Raised when the user clicks "Restart to update".</summary>
+    public event Action? RestartRequested;
 
     // ─── Vision settings handlers ────────────────────────────
 

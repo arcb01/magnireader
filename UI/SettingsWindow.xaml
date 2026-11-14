@@ -339,6 +339,55 @@
                         </ScrollViewer>
                     </Border>
                 </TabItem>
+
+                <!-- Tab 4: App (startup + updates) -->
+                <TabItem Header="🚀 App">
+                    <Border Background="#2A2A3E" Padding="16" CornerRadius="0,6,6,6">
+                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                            <StackPanel>
+                                <TextBlock Text="STARTUP" FontWeight="Bold" FontSize="11"
+                                           Foreground="#F5C2E7" Margin="0,0,0,8" />
+                                <CheckBox x:Name="LaunchOnStartupCheckBox" Content="Launch MagniReader when Windows starts"
+                                          Foreground="#CDD6F4" Margin="0,0,0,4" />
+                                <TextBlock Foreground="#A6ADC8" FontSize="11" TextWrapping="Wrap" Margin="0,0,0,14"
+                                           Text="Starts quietly in the tray when you sign in, so Ctrl+Alt+Click is ready right away." />
+
+                                <TextBlock Text="UPDATES" FontWeight="Bold" FontSize="11"
+                                           Foreground="#F5C2E7" Margin="0,0,0,8" />
+                                <CheckBox x:Name="AutoUpdateCheckBox" Content="Download new versions automatically"
+                                          Foreground="#CDD6F4" Margin="0,0,0,4" />
+                                <TextBlock Foreground="#A6ADC8" FontSize="11" TextWrapping="Wrap" Margin="0,0,0,10"
+                                           Text="Checks GitHub for a new release every few hours. A downloaded update installs the next time MagniReader starts, or when you choose Restart to update in the tray menu. Your settings and the Kokoro model are kept." />
+
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                                    <Button x:Name="CheckUpdatesBtn" Content="🔄 Check for updates now"
+                                            Background="#313244" Foreground="#CDD6F4"
+                                            BorderThickness="0" Padding="12,5"
+                                            FontSize="12" FontWeight="SemiBold"
+                                            Cursor="Hand" Click="CheckUpdates_Click" />
+                                    <Button x:Name="RestartToUpdateBtn" Content="⬆ Restart to update"
+                                            Background="#FFD700" Foreground="#1E1E2E"
+                                            BorderThickness="0" Padding="12,5" Margin="8,0,0,0"
+                                            FontSize="12" FontWeight="Bold" Visibility="Collapsed"
+                                            Cursor="Hand" Click="RestartToUpdate_Click" />
+                                </StackPanel>
+                                <TextBlock x:Name="UpdateStatusText" FontSize="12" Foreground="#A6ADC8"
+                                           TextWrapping="Wrap" Margin="0,0,0,14" />
+
+                                <TextBlock Text="ABOUT" FontWeight="Bold" FontSize="11"
+                                           Foreground="#F5C2E7" Margin="0,0,0,8" />
+                                <TextBlock x:Name="VersionText" FontSize="12" Foreground="#CDD6F4" />
+                                <TextBlock FontSize="11" Foreground="#6C7086" Margin="0,4,0,0">
+                                    <Hyperlink Foreground="#89B4FA"
+                                               RequestNavigate="Hyperlink_RequestNavigate"
+                                               NavigateUri="https://github.com/arcb01/magnireader/releases">
+                                        Release notes on GitHub
+                                    </Hyperlink>
+                                </TextBlock>
+                            </StackPanel>
+                        </ScrollViewer>
+                    </Border>
+                </TabItem>
             </TabControl>
 
             <!-- Footer -->
