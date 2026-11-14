@@ -67,6 +67,12 @@ public class AppSettings
     /// <summary>Speech volume: 0 to 100.</summary>
     public int Volume { get; set; } = 100;
 
+    /// <summary>Lower other apps' audio (music, videos) while MagniReader is speaking.</summary>
+    public bool DuckOtherAudio { get; set; } = true;
+
+    /// <summary>Volume other apps are lowered to while speaking, in % of their normal volume (0–100).</summary>
+    public int DuckLevel { get; set; } = 30;
+
     /// <summary>Overlay dim opacity: 0.0 to 1.0. Default: 0.6 (60%).</summary>
     public double DimOpacity { get; set; } = 0.6;
 

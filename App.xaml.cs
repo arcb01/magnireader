@@ -59,6 +59,7 @@ public partial class App : Application
         {
             CrashLogger.LogCrash(args.Exception, "UI Thread (Dispatcher)");
             args.Handled = TryShowCrashNotification(args.Exception);
+            if (!args.Handled) _speechEngine?.Ducker.RestoreNow();
         };
 
         // 2. Non-UI thread exceptions (ThreadPool, manual threads)
@@ -66,6 +67,8 @@ public partial class App : Application
         {
             if (args.ExceptionObject is Exception ex)
                 CrashLogger.LogCrash(ex, $"Background Thread (IsTerminating={args.IsTerminating})");
+            // Don't leave other apps' audio lowered if we're going down.
+            if (args.IsTerminating) _speechEngine?.Ducker.RestoreNow();
         };
 
         // 3. Unobserved async Task exceptions
@@ -107,6 +110,9 @@ public partial class App : Application
         _inputManager = new InputManager();
         _overlay = new OverlayWindow();
         _hoverHighlight = new HoverHighlightWindow();
+
+        // If a previous run crashed while music was lowered, turn it back up.
+        _speechEngine.Ducker.RecoverFromCrash();
 
         // Apply saved settings
         ApplySettings(_settingsStore.Settings);
@@ -527,6 +533,7 @@ public partial class App : Application
         _speechEngine?.SetRate(settings.SpeechRate);
         _speechEngine?.SetVolume(settings.Volume);
         _speechEngine?.ConfigureKokoro(settings);
+        _speechEngine?.ConfigureDucking(settings);
         _overlay?.UpdateSettings(settings.DimOpacity, settings.HighlightColor);
     }
 
