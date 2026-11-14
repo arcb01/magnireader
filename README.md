@@ -22,7 +22,7 @@ A fast, always-available screen reader with AI-powered visual analysis.
 ## Install
 
 1. Download **`MagniReader-win-Setup.exe`** from the [latest release](https://github.com/arcb01/magnireader/releases/latest).
-2. Run it. No admin rights needed: MagniReader installs for your user, adds Start menu and desktop shortcuts, and starts in the system tray.
+2. Run it. No admin rights needed: MagniReader installs for your user, adds Start menu and desktop shortcuts, and starts with its control bar and tray icon.
 3. Optional: right-click the tray icon → **Settings → 🚀 App → Launch MagniReader when Windows starts**.
 
 Installed copies update themselves: a new release is downloaded in the background and installed the next time MagniReader starts (or right-click the tray icon → **Restart to update**). Uninstall from Windows **Settings → Apps**. Your settings and the Kokoro model in `%APPDATA%\MagniReader` are kept across updates.
@@ -39,7 +39,26 @@ cd magnireader
 dotnet run
 ```
 
-The app starts silently in your **system tray** (near the clock). That's it.
+The app starts with a small **control bar** at the top of the screen, plus an icon in the **system tray** (near the clock).
+
+To run it without the SDK, publish once (see [Building](#building)) and start `MagniReader.exe` from the publish folder. You can pin that exe to Start or the taskbar.
+
+## Control bar
+
+A compact, always-on-top toolbar in the spirit of the Windows Magnifier toolbar. It never takes focus away from the app you're reading, so you can use it mid-document.
+
+| Button | What it does |
+|---|---|
+| ▶ Read | Click it, then click any text to read it. No Ctrl+Alt needed. Esc cancels. |
+| ■ Stop | Stops reading. |
+| − Speed + | Reading speed, -10 to +10 (same as the slider in Settings). |
+| Windows / Kokoro | Switches voice engine. Kokoro needs its model downloaded in Settings first. |
+| 📷 | Describe a screen area with AI (same as `Ctrl+Alt+S`). |
+| ⚙ | Opens Settings. |
+| — | Hides the bar to the tray. Double-click the tray icon to bring it back. |
+| ✕ | Exits MagniReader. |
+
+Drag the bar by its "MagniReader" label. It remembers where you put it, and whether it was hidden.
 
 ## Usage
 
@@ -47,8 +66,10 @@ The app starts silently in your **system tray** (near the clock). That's it.
 |---|---|
 | Read text | `Ctrl+Alt+Click` on any text |
 | Analyze screen area | `Ctrl+Alt+S` → drag to select |
-| Stop reading | Left-click anywhere or `Escape` |
-| Settings | Right-click tray icon → Settings |
+| Read without Ctrl+Alt | Control bar ▶, then click the text |
+| Stop reading | Left-click anywhere, `Escape`, or ■ on the bar |
+| Settings | ⚙ on the control bar, or right-click tray icon → Settings |
+| Show the control bar | Double-click the tray icon |
 | Exit | Right-click tray icon → Exit |
 
 ## How it works
@@ -136,7 +157,7 @@ dotnet run
 # Build standalone executable
 dotnet publish -c Release -r win-x64 --self-contained -p:PublishSingleFile=true
 
-# Output: bin/Release/net8.0-windows10.0.17763.0/win-x64/publish/MagniReader.exe
+# Output: bin/Release/net8.0-windows10.0.17763.0/publish/MagniReader.exe
 ```
 
 ## Releasing
@@ -165,6 +186,7 @@ magnireader/
 │   ├── SpeechEngine.cs          # Dual-engine speech synthesis (WinRT + SAPI5)
 │   └── VisionAnalyzer.cs        # Gemini / OpenAI vision API integration
 ├── UI/
+│   ├── ControlBarWindow.xaml    # Compact always-on-top control bar
 │   ├── OverlayWindow.xaml       # Reading overlay with progress fill
 │   ├── SnipWindow.xaml          # Screen capture selection overlay
 │   ├── VisionResultWindow.xaml  # AI analysis result display

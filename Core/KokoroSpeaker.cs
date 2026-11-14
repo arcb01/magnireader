@@ -294,10 +294,22 @@ public sealed class KokoroSpeaker : IDisposable
 
                     float[] samples;
                     List<(int pos, int len, double sec)> words;
-                    lock (_synthLock)
+                    try
                     {
-                        token.ThrowIfCancellationRequested();
-                        (samples, words) = SynthesizeChunk(model, text, start, length, voice, langCode, speed);
+                        lock (_synthLock)
+                        {
+                            token.ThrowIfCancellationRequested();
+                            (samples, words) = SynthesizeChunk(model, text, start, length, voice, langCode, speed);
+                        }
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        // One sentence the phonemizer can't handle must not stop the whole
+                        // reading (it used to cut the audio and jump to the next paragraph).
+                        Infrastructure.CrashLogger.LogError(
+                            $"[Kokoro] Skipped chunk {c + 1}/{chunks.Count} it could not synthesize: " +
+                            $"\"{Shorten(text.Substring(start, length))}\"", ex);
+                        continue;
                     }
                     if (samples.Length == 0) continue;
 
@@ -557,6 +569,8 @@ public sealed class KokoroSpeaker : IDisposable
     private static int FindSoftBreak(string text, int pos, int limit)
     {
         int hardEnd = Math.Min(text.Length, pos + limit);
+        // Never cut an emoji (surrogate pair) in half
+        if (hardEnd < text.Length && hardEnd > pos + 1 && char.IsLowSurrogate(text[hardEnd])) hardEnd--;
         int minEnd = pos + limit / 3;
         for (int i = hardEnd - 1; i > minEnd; i--)
             if (text[i] is ',' or ';' or ':' or '—' && i + 1 < text.Length && char.IsWhiteSpace(text[i + 1]))
@@ -565,6 +579,8 @@ public sealed class KokoroSpeaker : IDisposable
             if (char.IsWhiteSpace(text[i])) return i;
         return hardEnd;
     }
+
+    private static string Shorten(string s) => s.Length <= 80 ? s : s[..77] + "...";
 
     private static string NormalizeApostrophes(string s) =>
         s.Replace('\u2019', '\'').Replace('\u2018', '\'').Replace('\u02BC', '\'')
@@ -577,10 +593,15 @@ public sealed class KokoroSpeaker : IDisposable
     ///   - ALL-CAPS words: Spanish dropped them silently ("EDITAR" → nothing) and English
     ///     spelled them letter by letter ("MUNDO" → "M-U-N-D-O"). They are lower-cased,
     ///     except short English ones (≤ 4 letters) that are likely acronyms (USA, NASA).
+    ///   - Emoji and other characters outside the basic plane become spaces. The English
+    ///     phonemizer splits them into half characters and crashes ("String contains
+    ///     invalid Unicode code points"), which made Kokoro drop the rest of the text.
     /// </summary>
     internal static string NormalizeForSpeech(string s, string langCode)
     {
         var chars = NormalizeApostrophes(s).ToCharArray();
+        for (int k = 0; k < chars.Length; k++)
+            if (IsUnspeakableSymbol(chars[k])) chars[k] = ' ';
         bool english = langCode.StartsWith("en", StringComparison.Ordinal);
         int i = 0;
         while (i < chars.Length)
@@ -599,6 +620,17 @@ public sealed class KokoroSpeaker : IDisposable
         }
         return new string(chars);
     }
+
+    /// <summary>
+    /// Surrogates (emoji and other astral characters, paired or broken), plus the BMP
+    /// pieces emoji are built from: variation selectors, zero-width joiner, keycap mark
+    /// and the dingbat/misc-symbol blocks (☀ ✅ ❤ …).
+    /// </summary>
+    internal static bool IsUnspeakableSymbol(char c) =>
+        char.IsSurrogate(c)
+        || c is '\uFE0E' or '\uFE0F' or '\u200D' or '\u20E3'
+        || (c >= '\u2600' && c <= '\u27BF')
+        || (c >= '\u2B00' && c <= '\u2BFF');
 
     private static void Log(string message)
     {
