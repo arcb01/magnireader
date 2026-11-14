@@ -15,8 +15,9 @@
     <ApplicationIcon>app.ico</ApplicationIcon>
     <!-- Program.Main runs Velopack's install/update hooks before WPF starts -->
     <StartupObject>MagniReader.Program</StartupObject>
-    <!-- Overridden by the Release workflow from the git tag (v1.2.3 -> 1.2.3) -->
-    <Version>1.0.0</Version>
+    <!-- Overridden by the Release workflow from the git tag (v1.2.3 -> 1.2.3).
+         Local builds stay 0.0.0-dev so they never claim to be a released version. -->
+    <Version>0.0.0-dev</Version>
     <Product>MagniReader</Product>
     <!-- Exclude non-code directories from compilation -->
     <DefaultItemExcludes>$(DefaultItemExcludes);scripts\**</DefaultItemExcludes>
@@ -35,6 +36,8 @@
 
   <ItemGroup>
     <Content Include="app.ico" CopyToOutputDirectory="PreserveNewest" />
+    <!-- App logo shown inside the UI (Settings header, About, control bar) -->
+    <Resource Include="assets\magnireader.png" />
   </ItemGroup>
 
 </Project>

@@ -2,406 +2,404 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="MagniReader Settings"
-        Width="560" Height="720"
+        Width="620" Height="740"
         WindowStartupLocation="CenterScreen"
         ResizeMode="NoResize"
         Background="#1E1E2E"
         Foreground="White"
-        FontFamily="Segoe UI">
+        FontFamily="Segoe UI"
+        PreviewKeyDown="Window_PreviewKeyDown"
+        PreviewKeyUp="Window_PreviewKeyUp">
 
     <Window.Resources>
-        <Style TargetType="Slider">
-            <Setter Property="Foreground" Value="#FFD700" />
-            <Setter Property="Margin" Value="0,4,0,12" />
-        </Style>
-        <Style TargetType="TextBlock">
-            <Setter Property="Foreground" Value="#CDD6F4" />
-            <Setter Property="FontSize" Value="13" />
-        </Style>
-        <Style TargetType="ComboBox">
-            <Setter Property="Margin" Value="0,4,0,12" />
-            <Setter Property="Height" Value="30" />
-        </Style>
-        <!-- Small icon button style -->
-        <Style x:Key="IconButton" TargetType="Button">
-            <Setter Property="Background" Value="Transparent" />
-            <Setter Property="BorderThickness" Value="0" />
-            <Setter Property="FontSize" Value="14" />
-            <Setter Property="Width" Value="28" />
-            <Setter Property="Height" Value="28" />
-            <Setter Property="Cursor" Value="Hand" />
-            <Setter Property="Foreground" Value="#A6ADC8" />
-            <Setter Property="Padding" Value="0" />
-            <Setter Property="VerticalContentAlignment" Value="Center" />
-            <Setter Property="HorizontalContentAlignment" Value="Center" />
-        </Style>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="SettingsTheme.xaml" />
+            </ResourceDictionary.MergedDictionaries>
+
+            <!-- Scrolling page inside each tab -->
+            <Style x:Key="TabPage" TargetType="ScrollViewer">
+                <Setter Property="VerticalScrollBarVisibility" Value="Auto" />
+                <Setter Property="HorizontalScrollBarVisibility" Value="Disabled" />
+                <Setter Property="Padding" Value="18,16,14,16" />
+            </Style>
+
+            <!-- Button that records a shortcut -->
+            <Style x:Key="HotkeyButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+                <Setter Property="MinWidth" Value="170" />
+                <Setter Property="Height" Value="34" />
+                <Setter Property="Padding" Value="8,0" />
+                <Setter Property="Background" Value="#1E1E2E" />
+                <Setter Property="BorderBrush" Value="#45475A" />
+                <Setter Property="FontWeight" Value="Normal" />
+            </Style>
+        </ResourceDictionary>
     </Window.Resources>
 
-    <Border Margin="0" Background="#1E1E2E">
-        <Grid Margin="24">
-            <Grid.RowDefinitions>
-                <RowDefinition Height="Auto" />
-                <RowDefinition Height="*" />
-                <RowDefinition Height="Auto" />
-            </Grid.RowDefinitions>
+    <Grid Margin="24,20,24,20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
 
-            <!-- Header -->
-            <StackPanel Grid.Row="0" Margin="0,0,0,14">
-                <TextBlock Text="⚙ MagniReader Settings"
-                           FontSize="22" FontWeight="Bold"
-                           Foreground="#FFD700" />
-                <TextBlock Text="Customize your reading experience"
-                           FontSize="13" Foreground="#6C7086"
-                           Margin="0,4,0,0" />
+        <!-- Header -->
+        <Grid Grid.Row="0" Margin="0,0,0,16">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <Image Source="/assets/magnireader.png" Width="44" Height="44" Margin="0,0,14,0"
+                   RenderOptions.BitmapScalingMode="HighQuality" VerticalAlignment="Center" />
+            <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                <TextBlock Text="MagniReader Settings" FontSize="22" FontWeight="Bold" Foreground="#FFD700" />
+                <TextBlock Text="Customize your reading experience" FontSize="13" Foreground="#6C7086"
+                           Margin="0,2,0,0" />
             </StackPanel>
+        </Grid>
 
-            <!-- Tabbed Content -->
-            <TabControl Grid.Row="1" Background="Transparent" BorderThickness="0"
-                        Foreground="White">
-                <TabControl.Resources>
-                    <Style TargetType="TabItem">
-                        <Setter Property="Background" Value="#313244" />
-                        <Setter Property="Foreground" Value="#A6ADC8" />
-                        <Setter Property="Padding" Value="14,6" />
-                        <Setter Property="FontSize" Value="13" />
-                        <Setter Property="FontWeight" Value="SemiBold" />
-                        <Setter Property="Template">
-                            <Setter.Value>
-                                <ControlTemplate TargetType="TabItem">
-                                    <Border x:Name="Border" Background="#313244"
-                                            CornerRadius="6,6,0,0" Padding="14,6" Margin="0,0,2,0">
-                                        <ContentPresenter ContentSource="Header"
-                                                          HorizontalAlignment="Center"
-                                                          VerticalAlignment="Center" />
-                                    </Border>
-                                    <ControlTemplate.Triggers>
-                                        <Trigger Property="IsSelected" Value="True">
-                                            <Setter TargetName="Border" Property="Background" Value="#45475A" />
-                                            <Setter Property="Foreground" Value="#FFD700" />
-                                        </Trigger>
-                                    </ControlTemplate.Triggers>
-                                </ControlTemplate>
-                            </Setter.Value>
-                        </Setter>
-                    </Style>
-                </TabControl.Resources>
+        <TabControl Grid.Row="1" x:Name="Tabs">
 
-                <!-- Tab 1: Speech & Overlay -->
-                <TabItem Header="🎤 Speech">
-                    <Border Background="#2A2A3E" Padding="16" CornerRadius="0,6,6,6">
-                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+            <!-- ═══ Speech: engine, voices, rate, volume ═══ -->
+            <TabItem Header="🎤 Speech">
+                <ScrollViewer Style="{StaticResource TabPage}">
+                    <StackPanel>
+                        <TextBlock Text="VOICE ENGINE" Style="{StaticResource SectionHeader}" />
+                        <ComboBox x:Name="EngineCombo" SelectionChanged="EngineCombo_SelectionChanged">
+                            <ComboBoxItem Content="Windows voices (SAPI / OneCore)" IsSelected="True" />
+                            <ComboBoxItem Content="Kokoro (offline neural, English &amp; Spanish)" />
+                        </ComboBox>
+
+                        <!-- Kokoro voices (only when Kokoro is selected) -->
+                        <Border x:Name="KokoroPanel" Style="{StaticResource Card}" Visibility="Collapsed">
                             <StackPanel>
-                                <TextBlock Text="VOICE ENGINE" FontWeight="Bold" FontSize="11"
-                                           Foreground="#F5C2E7" Margin="0,0,0,8" />
-
-                                <ComboBox x:Name="EngineCombo" SelectionChanged="EngineCombo_SelectionChanged">
-                                    <ComboBoxItem Content="Windows voices (SAPI / OneCore)" IsSelected="True" />
-                                    <ComboBoxItem Content="Kokoro (offline neural, English &amp; Spanish)" />
-                                </ComboBox>
-
-                                <Border x:Name="KokoroPanel" Background="#313244" CornerRadius="8"
-                                        Padding="12" Margin="0,0,0,14" Visibility="Collapsed">
-                                    <StackPanel>
-                                        <TextBlock Text="English voice" />
-                                        <Grid>
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="Auto" />
-                                            </Grid.ColumnDefinitions>
-                                            <ComboBox x:Name="KokoroEnglishCombo" DisplayMemberPath="DisplayName" />
-                                            <Button Grid.Column="1" Content="▶" Style="{StaticResource IconButton}"
-                                                    Margin="6,0,0,8" ToolTip="Preview"
-                                                    Click="PreviewKokoroEnglish_Click" />
-                                        </Grid>
-
-                                        <TextBlock Text="Spanish voice" />
-                                        <Grid>
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="Auto" />
-                                            </Grid.ColumnDefinitions>
-                                            <ComboBox x:Name="KokoroSpanishCombo" DisplayMemberPath="DisplayName" />
-                                            <Button Grid.Column="1" Content="▶" Style="{StaticResource IconButton}"
-                                                    Margin="6,0,0,8" ToolTip="Preview"
-                                                    Click="PreviewKokoroSpanish_Click" />
-                                        </Grid>
-
-                                        <TextBlock x:Name="KokoroStatusText" FontSize="11" Foreground="#A6ADC8"
-                                                   TextWrapping="Wrap" Margin="0,0,0,6" />
-                                        <ProgressBar x:Name="KokoroProgress" Height="6" Minimum="0" Maximum="1"
-                                                     Foreground="#FFD700" Background="#45475A" BorderThickness="0"
-                                                     Margin="0,0,0,6" Visibility="Collapsed" />
-                                        <Button x:Name="KokoroDownloadBtn" Content="⬇ Download Kokoro model"
-                                                Background="#89B4FA" Foreground="#1E1E2E"
-                                                FontWeight="SemiBold" Height="30" BorderThickness="0"
-                                                Cursor="Hand" Visibility="Collapsed"
-                                                Click="KokoroDownload_Click" />
-                                        <TextBlock FontSize="11" Foreground="#6C7086" TextWrapping="Wrap" Margin="0,6,0,0"
-                                                   Text="Other languages (Catalan, French, …) keep using the Windows voices. If Kokoro fails, a Windows voice reads instead." />
-                                    </StackPanel>
-                                </Border>
-
-                                <TextBlock Text="SPEECH" FontWeight="Bold" FontSize="11"
-                                           Foreground="#F5C2E7" Margin="0,0,0,8" />
-
-                                <TextBlock>
-                                    <Run Text="Speech Rate: " />
-                                    <Run x:Name="RateValueText" Text="1" Foreground="#FFD700" />
-                                </TextBlock>
-                                <Slider x:Name="RateSlider" Minimum="-5" Maximum="5"
-                                        Value="1" TickFrequency="1" IsSnapToTickEnabled="True"
-                                        ValueChanged="RateSlider_ValueChanged" />
-
-                                <TextBlock>
-                                    <Run Text="Volume: " />
-                                    <Run x:Name="VolumeValueText" Text="100%" Foreground="#FFD700" />
-                                </TextBlock>
-                                <Slider x:Name="VolumeSlider" Minimum="0" Maximum="200"
-                                        Value="100" TickFrequency="10" IsSnapToTickEnabled="True"
-                                        ValueChanged="VolumeSlider_ValueChanged" />
-
-                                <CheckBox x:Name="DuckCheckBox" Content="Lower other sounds while reading"
-                                          Foreground="#CDD6F4" Margin="0,10,0,4"
-                                          Checked="DuckCheckBox_Changed" Unchecked="DuckCheckBox_Changed" />
-                                <TextBlock Foreground="#A6ADC8" FontSize="11" TextWrapping="Wrap" Margin="0,0,0,6"
-                                           Text="Music and videos get quieter while MagniReader speaks and go back to normal when it stops." />
-                                <TextBlock>
-                                    <Run Text="Lower other sounds by: " />
-                                    <Run x:Name="DuckLevelValueText" Text="70%" Foreground="#FFD700" />
-                                </TextBlock>
-                                <Slider x:Name="DuckLevelSlider" Minimum="20" Maximum="100"
-                                        Value="70" TickFrequency="10" IsSnapToTickEnabled="True"
-                                        ValueChanged="DuckLevelSlider_ValueChanged" />
-
-                                <TextBlock Text="VISUAL OVERLAY" FontWeight="Bold" FontSize="11"
-                                           Foreground="#F5C2E7" Margin="0,12,0,8" />
-
-                                <TextBlock>
-                                    <Run Text="Dim Opacity: " />
-                                    <Run x:Name="OpacityValueText" Text="60%" Foreground="#FFD700" />
-                                </TextBlock>
-                                <Slider x:Name="OpacitySlider" Minimum="0.2" Maximum="0.9"
-                                        Value="0.6" TickFrequency="0.1" IsSnapToTickEnabled="True"
-                                        ValueChanged="OpacitySlider_ValueChanged" />
-
-                                <TextBlock Text="Highlight Theme" />
-                                <ComboBox x:Name="ThemeCombo" SelectionChanged="ThemeCombo_SelectionChanged">
-                                    <ComboBoxItem Content="🌟 Gold on Dark (Default)" IsSelected="True" />
-                                    <ComboBoxItem Content="🔵 Blue on Dark" />
-                                    <ComboBoxItem Content="🟢 Green on Dark" />
-                                    <ComboBoxItem Content="⚪ White on Dark" />
-                                    <ComboBoxItem Content="🟡 High Contrast Yellow" />
-                                </ComboBox>
-
-                                <TextBlock Text="SHORTCUTS" FontWeight="Bold" FontSize="11"
-                                           Foreground="#F5C2E7" Margin="0,12,0,8" />
-                                <Border Background="#313244" CornerRadius="8" Padding="14">
-                                    <StackPanel>
-                                        <TextBlock Foreground="#A6ADC8">
-                                            <Run Text="Ctrl + Alt + Click" Foreground="#FFD700" FontWeight="Bold" />
-                                            <Run Text="  Read text at cursor" />
-                                        </TextBlock>
-                                        <TextBlock Foreground="#A6ADC8" Margin="0,6,0,0">
-                                            <Run Text="Left Click / Escape" Foreground="#FFD700" FontWeight="Bold" />
-                                            <Run Text="  Stop reading" />
-                                        </TextBlock>
-                                    </StackPanel>
-                                </Border>
-                            </StackPanel>
-                        </ScrollViewer>
-                    </Border>
-                </TabItem>
-
-                <!-- Tab 2: Voice Management -->
-                <TabItem Header="🗣️ Voices">
-                    <Border Background="#2A2A3E" Padding="16" CornerRadius="0,6,6,6">
-                        <Grid>
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto" />
-                                <RowDefinition Height="*" />
-                                <RowDefinition Height="Auto" />
-                            </Grid.RowDefinitions>
-
-                            <TextBlock Grid.Row="0" Text="Voice Priority by Language"
-                                       FontWeight="Bold" FontSize="11"
-                                       Foreground="#F5C2E7" Margin="0,0,0,4" />
-                            <TextBlock Grid.Row="0" Text="Drag with ▲▼ to reorder. ▶ to preview."
-                                       FontSize="11" Foreground="#6C7086" Margin="0,16,0,8" />
-
-                            <!-- Voice groups will be populated here -->
-                            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto"
-                                          Margin="0,8,0,0">
-                                <StackPanel x:Name="VoiceGroupsPanel" />
-                            </ScrollViewer>
-
-                            <!-- Enable OneCore -->
-                            <StackPanel Grid.Row="2" Margin="0,10,0,0">
-                                <TextBlock x:Name="VoiceHelpText" Text=""
-                                           FontSize="11" Foreground="#6C7086"
-                                           TextWrapping="Wrap" Margin="0,0,0,6" />
-                                <Button x:Name="EnableOneCoreBtn"
-                                        Content="🔓 Enable OneCore Voices (Admin)"
-                                        Background="#89B4FA" Foreground="#1E1E2E"
-                                        FontWeight="SemiBold" Height="30"
-                                        BorderThickness="0" Cursor="Hand"
-                                        Visibility="Collapsed"
-                                        Click="EnableOneCoreVoices_Click" />
-                            </StackPanel>
-                        </Grid>
-                    </Border>
-                </TabItem>
-
-                <!-- Tab 3: Vision / Screenshot Analysis -->
-                <TabItem Header="🔍 Vision">
-                    <Border Background="#2A2A3E" Padding="16" CornerRadius="0,6,6,6">
-                        <ScrollViewer VerticalScrollBarVisibility="Auto">
-                            <StackPanel>
-                                <TextBlock Text="SCREENSHOT ANALYSIS" FontWeight="Bold" FontSize="11"
-                                           Foreground="#F5C2E7" Margin="0,0,0,8" />
-                                <TextBlock Text="Capture a screen area and get an AI description of its content."
-                                           FontSize="12" Foreground="#6C7086" Margin="0,0,0,14"
-                                           TextWrapping="Wrap" />
-
-                                <TextBlock Text="Vision Provider" />
-                                <ComboBox x:Name="VisionProviderCombo" Margin="0,4,0,12">
-                                    <ComboBoxItem Content="Gemini (Google)" IsSelected="True" />
-                                    <ComboBoxItem Content="OpenAI (GPT-4o)" />
-                                </ComboBox>
-
-                                <TextBlock Text="API Key" />
-                                <Grid Margin="0,4,0,4">
+                                <TextBlock Text="English voice" />
+                                <Grid>
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*" />
                                         <ColumnDefinition Width="Auto" />
                                     </Grid.ColumnDefinitions>
-                                    <PasswordBox x:Name="ApiKeyBox"
-                                                 Background="#313244" Foreground="White"
-                                                 BorderBrush="#45475A" BorderThickness="1"
-                                                 Height="30" Padding="6,4"
-                                                 FontFamily="Consolas" FontSize="13"
-                                                 PasswordChanged="ApiKeyBox_PasswordChanged" />
-                                    <TextBox x:Name="ApiKeyTextBox"
-                                             Background="#313244" Foreground="White"
-                                             BorderBrush="#45475A" BorderThickness="1"
-                                             Height="30" Padding="6,4"
-                                             FontFamily="Consolas" FontSize="13"
-                                             Visibility="Collapsed"
-                                             TextChanged="ApiKeyTextBox_TextChanged" />
-                                    <Button Grid.Column="1" Content="👁" Width="32" Height="30"
-                                            Style="{StaticResource IconButton}" FontSize="16"
-                                            Click="ToggleApiKeyVisibility" Margin="4,0,0,0"
-                                            ToolTip="Show/hide API key" />
+                                    <ComboBox x:Name="KokoroEnglishCombo" DisplayMemberPath="DisplayName" />
+                                    <Button Grid.Column="1" Content="▶" Style="{StaticResource IconButton}"
+                                            Margin="6,0,0,8" ToolTip="Preview"
+                                            Click="PreviewKokoroEnglish_Click" />
                                 </Grid>
 
-                                <!-- Test button and status -->
-                                <StackPanel Orientation="Horizontal" Margin="0,6,0,2">
-                                    <Button x:Name="TestKeyBtn" Content="🔑 Test API Key"
-                                            Background="#313244" Foreground="#CDD6F4"
-                                            BorderThickness="0" Padding="12,5"
-                                            FontFamily="Segoe UI" FontSize="12" FontWeight="SemiBold"
-                                            Cursor="Hand" Click="TestApiKey_Click" />
-                                    <TextBlock x:Name="TestKeyStatus"
-                                               FontSize="12" Foreground="#6C7086"
-                                               Margin="10,0,0,0" VerticalAlignment="Center"
+                                <TextBlock Text="Spanish voice" />
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <ComboBox x:Name="KokoroSpanishCombo" DisplayMemberPath="DisplayName" />
+                                    <Button Grid.Column="1" Content="▶" Style="{StaticResource IconButton}"
+                                            Margin="6,0,0,8" ToolTip="Preview"
+                                            Click="PreviewKokoroSpanish_Click" />
+                                </Grid>
+
+                                <TextBlock x:Name="KokoroStatusText" FontSize="11" Foreground="#A6ADC8"
+                                           TextWrapping="Wrap" Margin="0,0,0,6" />
+                                <ProgressBar x:Name="KokoroProgress" Minimum="0" Maximum="1"
+                                             Margin="0,0,0,8" Visibility="Collapsed" />
+                                <Button x:Name="KokoroDownloadBtn" Content="⬇ Download Kokoro model"
+                                        Style="{StaticResource LinkButton}" Height="32"
+                                        Visibility="Collapsed" Click="KokoroDownload_Click" />
+                                <TextBlock FontSize="11" Foreground="#6C7086" TextWrapping="Wrap" Margin="0,8,0,0"
+                                           Text="Other languages (Catalan, French, …) keep using the Windows voices. If Kokoro fails, a Windows voice reads instead." />
+                            </StackPanel>
+                        </Border>
+
+                        <!-- Windows voice priority (only when Windows voices are selected) -->
+                        <StackPanel x:Name="WindowsVoicesPanel">
+                            <TextBlock Text="VOICE PRIORITY BY LANGUAGE" Style="{StaticResource SectionHeader}" />
+                            <TextBlock Style="{StaticResource HintText}"
+                                       Text="The first voice of each language is used. Reorder with ▲ ▼, preview with ▶." />
+                            <StackPanel x:Name="VoiceGroupsPanel" />
+                            <TextBlock x:Name="VoiceHelpText" FontSize="11" Foreground="#6C7086"
+                                       TextWrapping="Wrap" Margin="0,8,0,14" />
+                        </StackPanel>
+
+                        <TextBlock Text="SPEECH" Style="{StaticResource SectionHeader}" />
+                        <TextBlock>
+                            <Run Text="Speech rate: " />
+                            <Run x:Name="RateValueText" Text="1" Foreground="#FFD700" />
+                        </TextBlock>
+                        <Slider x:Name="RateSlider" Minimum="-5" Maximum="5"
+                                Value="1" TickFrequency="1" IsSnapToTickEnabled="True"
+                                ValueChanged="RateSlider_ValueChanged" />
+
+                        <TextBlock>
+                            <Run Text="Volume: " />
+                            <Run x:Name="VolumeValueText" Text="100%" Foreground="#FFD700" />
+                        </TextBlock>
+                        <Slider x:Name="VolumeSlider" Minimum="0" Maximum="200"
+                                Value="100" TickFrequency="10" IsSnapToTickEnabled="True"
+                                ValueChanged="VolumeSlider_ValueChanged" />
+
+                        <CheckBox x:Name="DuckCheckBox" Content="Lower other sounds while reading"
+                                  Margin="0,6,0,2"
+                                  Checked="DuckCheckBox_Changed" Unchecked="DuckCheckBox_Changed" />
+                        <TextBlock Style="{StaticResource HintText}"
+                                   Text="Music and videos get quieter while MagniReader speaks and go back to normal when it stops." />
+                        <TextBlock>
+                            <Run Text="Lower other sounds by: " />
+                            <Run x:Name="DuckLevelValueText" Text="70%" Foreground="#FFD700" />
+                        </TextBlock>
+                        <Slider x:Name="DuckLevelSlider" Minimum="20" Maximum="100"
+                                Value="70" TickFrequency="10" IsSnapToTickEnabled="True"
+                                ValueChanged="DuckLevelSlider_ValueChanged" />
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ═══ Display: overlay and highlight ═══ -->
+            <TabItem Header="🎨 Display">
+                <ScrollViewer Style="{StaticResource TabPage}">
+                    <StackPanel>
+                        <TextBlock Text="READING OVERLAY" Style="{StaticResource SectionHeader}" />
+                        <TextBlock>
+                            <Run Text="Dim the rest of the screen: " />
+                            <Run x:Name="OpacityValueText" Text="60%" Foreground="#FFD700" />
+                        </TextBlock>
+                        <Slider x:Name="OpacitySlider" Minimum="0.2" Maximum="0.9"
+                                Value="0.6" TickFrequency="0.1" IsSnapToTickEnabled="True"
+                                ValueChanged="OpacitySlider_ValueChanged" />
+
+                        <TextBlock Text="Highlight theme" />
+                        <ComboBox x:Name="ThemeCombo">
+                            <ComboBoxItem Content="🌟 Gold on Dark (Default)" IsSelected="True" />
+                            <ComboBoxItem Content="🔵 Blue on Dark" />
+                            <ComboBoxItem Content="🟢 Green on Dark" />
+                            <ComboBoxItem Content="⚪ White on Dark" />
+                            <ComboBoxItem Content="🟡 High Contrast Yellow" />
+                        </ComboBox>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ═══ Shortcuts ═══ -->
+            <TabItem Header="⌨ Shortcuts">
+                <ScrollViewer Style="{StaticResource TabPage}">
+                    <StackPanel>
+                        <TextBlock Text="SHORTCUTS" Style="{StaticResource SectionHeader}" />
+                        <TextBlock Style="{StaticResource HintText}" Margin="0,0,0,14"
+                                   Text="Click a shortcut, then press the new keys. Esc cancels. Use at least two of Ctrl, Alt, Shift and Win so the shortcut doesn't get in the way of normal typing and clicking." />
+
+                        <Border Style="{StaticResource Card}">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel VerticalAlignment="Center" Margin="0,0,10,0">
+                                    <TextBlock Text="Read text under the cursor" FontWeight="SemiBold" />
+                                    <TextBlock Text="Hold these keys and click the text" FontSize="11" Foreground="#A6ADC8"
                                                TextWrapping="Wrap" />
                                 </StackPanel>
+                                <Button x:Name="ReadHotkeyBtn" Grid.Column="1" Tag="Read"
+                                        Style="{StaticResource HotkeyButton}" Click="HotkeyButton_Click"
+                                        LostKeyboardFocus="HotkeyButton_LostFocus" />
+                                <Button Grid.Column="2" Content="↺" Tag="Read" Style="{StaticResource IconButton}"
+                                        Margin="6,0,0,0" ToolTip="Reset to default" Click="HotkeyReset_Click" />
+                            </Grid>
+                        </Border>
 
-                                <TextBlock FontSize="11" Foreground="#6C7086" Margin="0,8,0,14">
-                                    <Run Text="Get a Gemini key at " />
-                                    <Hyperlink x:Name="GeminiLink" Foreground="#89B4FA"
-                                               RequestNavigate="Hyperlink_RequestNavigate"
-                                               NavigateUri="https://aistudio.google.com/apikey">
-                                        aistudio.google.com/apikey
-                                    </Hyperlink>
-                                </TextBlock>
-
-                                <TextBlock Text="SHORTCUTS" FontWeight="Bold" FontSize="11"
-                                           Foreground="#F5C2E7" Margin="0,12,0,8" />
-                                <Border Background="#313244" CornerRadius="8" Padding="14">
-                                    <StackPanel>
-                                        <TextBlock Foreground="#A6ADC8">
-                                            <Run Text="Ctrl + Alt + S" Foreground="#FFD700" FontWeight="Bold" />
-                                            <Run Text="  Capture and analyze screen area" />
-                                        </TextBlock>
-                                    </StackPanel>
-                                </Border>
-
-                                <TextBlock Text="HOW IT WORKS" FontWeight="Bold" FontSize="11"
-                                           Foreground="#F5C2E7" Margin="0,16,0,8" />
-                                <TextBlock FontSize="12" Foreground="#A6ADC8" TextWrapping="Wrap"
-                                           LineHeight="20">
-                                    1. Press Ctrl+Alt+S to activate the snipping tool.
-                                    2. Drag to select the area you want to analyze.
-                                    3. The screenshot is sent to the selected AI provider.
-                                    4. The description appears on screen and is read aloud.
-                                </TextBlock>
-                            </StackPanel>
-                        </ScrollViewer>
-                    </Border>
-                </TabItem>
-
-                <!-- Tab 4: App (startup + updates) -->
-                <TabItem Header="🚀 App">
-                    <Border Background="#2A2A3E" Padding="16" CornerRadius="0,6,6,6">
-                        <ScrollViewer VerticalScrollBarVisibility="Auto">
-                            <StackPanel>
-                                <TextBlock Text="STARTUP" FontWeight="Bold" FontSize="11"
-                                           Foreground="#F5C2E7" Margin="0,0,0,8" />
-                                <CheckBox x:Name="LaunchOnStartupCheckBox" Content="Launch MagniReader when Windows starts"
-                                          Foreground="#CDD6F4" Margin="0,0,0,4" />
-                                <TextBlock Foreground="#A6ADC8" FontSize="11" TextWrapping="Wrap" Margin="0,0,0,14"
-                                           Text="Starts quietly in the tray when you sign in, so Ctrl+Alt+Click is ready right away." />
-
-                                <TextBlock Text="UPDATES" FontWeight="Bold" FontSize="11"
-                                           Foreground="#F5C2E7" Margin="0,0,0,8" />
-                                <CheckBox x:Name="AutoUpdateCheckBox" Content="Download new versions automatically"
-                                          Foreground="#CDD6F4" Margin="0,0,0,4" />
-                                <TextBlock Foreground="#A6ADC8" FontSize="11" TextWrapping="Wrap" Margin="0,0,0,10"
-                                           Text="Checks GitHub for a new release every few hours. A downloaded update installs the next time MagniReader starts, or when you choose Restart to update in the tray menu. Your settings and the Kokoro model are kept." />
-
-                                <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
-                                    <Button x:Name="CheckUpdatesBtn" Content="🔄 Check for updates now"
-                                            Background="#313244" Foreground="#CDD6F4"
-                                            BorderThickness="0" Padding="12,5"
-                                            FontSize="12" FontWeight="SemiBold"
-                                            Cursor="Hand" Click="CheckUpdates_Click" />
-                                    <Button x:Name="RestartToUpdateBtn" Content="⬆ Restart to update"
-                                            Background="#FFD700" Foreground="#1E1E2E"
-                                            BorderThickness="0" Padding="12,5" Margin="8,0,0,0"
-                                            FontSize="12" FontWeight="Bold" Visibility="Collapsed"
-                                            Cursor="Hand" Click="RestartToUpdate_Click" />
+                        <Border Style="{StaticResource Card}">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel VerticalAlignment="Center" Margin="0,0,10,0">
+                                    <TextBlock Text="Read selected text" FontWeight="SemiBold" />
+                                    <TextBlock Text="Reads the text you have selected in any app" FontSize="11"
+                                               Foreground="#A6ADC8" TextWrapping="Wrap" />
                                 </StackPanel>
-                                <TextBlock x:Name="UpdateStatusText" FontSize="12" Foreground="#A6ADC8"
-                                           TextWrapping="Wrap" Margin="0,0,0,14" />
+                                <Button x:Name="SelectionHotkeyBtn" Grid.Column="1" Tag="Selection"
+                                        Style="{StaticResource HotkeyButton}" Click="HotkeyButton_Click"
+                                        LostKeyboardFocus="HotkeyButton_LostFocus" />
+                                <Button Grid.Column="2" Content="↺" Tag="Selection" Style="{StaticResource IconButton}"
+                                        Margin="6,0,0,0" ToolTip="Reset to default" Click="HotkeyReset_Click" />
+                            </Grid>
+                        </Border>
 
-                                <TextBlock Text="ABOUT" FontWeight="Bold" FontSize="11"
-                                           Foreground="#F5C2E7" Margin="0,0,0,8" />
-                                <TextBlock x:Name="VersionText" FontSize="12" Foreground="#CDD6F4" />
-                                <TextBlock FontSize="11" Foreground="#6C7086" Margin="0,4,0,0">
-                                    <Hyperlink Foreground="#89B4FA"
-                                               RequestNavigate="Hyperlink_RequestNavigate"
-                                               NavigateUri="https://github.com/arcb01/magnireader/releases">
-                                        Release notes on GitHub
-                                    </Hyperlink>
-                                </TextBlock>
-                            </StackPanel>
-                        </ScrollViewer>
-                    </Border>
-                </TabItem>
-            </TabControl>
+                        <Border Style="{StaticResource Card}">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel VerticalAlignment="Center" Margin="0,0,10,0">
+                                    <TextBlock Text="Describe a screen area" FontWeight="SemiBold" />
+                                    <TextBlock Text="Drag over part of the screen to get an AI description" FontSize="11"
+                                               Foreground="#A6ADC8" TextWrapping="Wrap" />
+                                </StackPanel>
+                                <Button x:Name="SnipHotkeyBtn" Grid.Column="1" Tag="Snip"
+                                        Style="{StaticResource HotkeyButton}" Click="HotkeyButton_Click"
+                                        LostKeyboardFocus="HotkeyButton_LostFocus" />
+                                <Button Grid.Column="2" Content="↺" Tag="Snip" Style="{StaticResource IconButton}"
+                                        Margin="6,0,0,0" ToolTip="Reset to default" Click="HotkeyReset_Click" />
+                            </Grid>
+                        </Border>
 
-            <!-- Footer -->
-            <StackPanel Grid.Row="2" Orientation="Horizontal"
-                        HorizontalAlignment="Right" Margin="0,14,0,0">
-                <Button Content="Save" Width="90" Height="34"
-                        Click="Save_Click"
-                        Background="#FFD700" Foreground="#1E1E2E"
-                        FontWeight="Bold" BorderThickness="0" Cursor="Hand" />
-                <Button Content="Cancel" Width="90" Height="34"
-                        Click="Cancel_Click" Margin="8,0,0,0"
-                        Background="#313244" Foreground="#CDD6F4"
-                        FontWeight="SemiBold" BorderThickness="0" Cursor="Hand" />
-            </StackPanel>
-        </Grid>
-    </Border>
+                        <TextBlock x:Name="HotkeyStatusText" FontSize="12" TextWrapping="Wrap"
+                                   Foreground="#F38BA8" Margin="0,0,0,10" Visibility="Collapsed" />
+
+                        <Border Style="{StaticResource Card}">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel VerticalAlignment="Center" Margin="0,0,10,0">
+                                    <TextBlock Text="Stop reading" FontWeight="SemiBold" />
+                                    <TextBlock Text="Always available while MagniReader is reading" FontSize="11"
+                                               Foreground="#A6ADC8" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                    <Border Style="{StaticResource KeyCap}">
+                                        <TextBlock Text="Esc" FontSize="12" HorizontalAlignment="Center" />
+                                    </Border>
+                                    <TextBlock Text=" or click anywhere" FontSize="12" Foreground="#A6ADC8"
+                                               VerticalAlignment="Center" />
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ═══ Vision / screenshot analysis ═══ -->
+            <TabItem Header="🔍 Vision">
+                <ScrollViewer Style="{StaticResource TabPage}">
+                    <StackPanel>
+                        <TextBlock Text="SCREENSHOT ANALYSIS" Style="{StaticResource SectionHeader}" />
+                        <TextBlock Style="{StaticResource HintText}" Margin="0,0,0,14"
+                                   Text="Capture a screen area and get an AI description of its content." />
+
+                        <TextBlock Text="Vision provider" />
+                        <ComboBox x:Name="VisionProviderCombo">
+                            <ComboBoxItem Content="Gemini (Google)" IsSelected="True" />
+                            <ComboBoxItem Content="OpenAI (GPT-4o)" />
+                        </ComboBox>
+
+                        <TextBlock Text="API key" />
+                        <Grid Margin="0,4,0,4">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <PasswordBox x:Name="ApiKeyBox" FontFamily="Consolas" FontSize="13"
+                                         PasswordChanged="ApiKeyBox_PasswordChanged" />
+                            <TextBox x:Name="ApiKeyTextBox" FontFamily="Consolas" FontSize="13"
+                                     Visibility="Collapsed" TextChanged="ApiKeyTextBox_TextChanged" />
+                            <Button Grid.Column="1" Content="👁" Width="32" Height="32"
+                                    Style="{StaticResource IconButton}" FontSize="15"
+                                    Click="ToggleApiKeyVisibility" Margin="4,0,0,0"
+                                    ToolTip="Show/hide API key" />
+                        </Grid>
+
+                        <StackPanel Orientation="Horizontal" Margin="0,8,0,2">
+                            <Button x:Name="TestKeyBtn" Content="🔑 Test API key" Click="TestApiKey_Click" />
+                            <TextBlock x:Name="TestKeyStatus" FontSize="12" Foreground="#6C7086"
+                                       Margin="10,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap" />
+                        </StackPanel>
+
+                        <TextBlock FontSize="11" Foreground="#6C7086" Margin="0,10,0,16">
+                            <Run Text="Get a Gemini key at " />
+                            <Hyperlink x:Name="GeminiLink" Foreground="#89B4FA"
+                                       RequestNavigate="Hyperlink_RequestNavigate"
+                                       NavigateUri="https://aistudio.google.com/apikey">
+                                aistudio.google.com/apikey
+                            </Hyperlink>
+                        </TextBlock>
+
+                        <TextBlock Text="HOW IT WORKS" Style="{StaticResource SectionHeader}" />
+                        <TextBlock FontSize="12" Foreground="#A6ADC8" TextWrapping="Wrap" LineHeight="20">
+                            <Run Text="1. Press " /><Run x:Name="SnipHowToKeys" Text="Ctrl+Alt+S" Foreground="#FFD700" /><Run
+                                Text=" or the camera button on the control bar." />
+                            <LineBreak />
+                            <Run Text="2. Drag to select the area you want described." />
+                            <LineBreak />
+                            <Run Text="3. The screenshot is sent to the selected AI provider." />
+                            <LineBreak />
+                            <Run Text="4. The description appears on screen and is read aloud." />
+                        </TextBlock>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ═══ App: startup, updates, about ═══ -->
+            <TabItem Header="🚀 App">
+                <ScrollViewer Style="{StaticResource TabPage}">
+                    <StackPanel>
+                        <TextBlock Text="STARTUP" Style="{StaticResource SectionHeader}" />
+                        <CheckBox x:Name="LaunchOnStartupCheckBox" Content="Launch MagniReader when Windows starts" />
+                        <TextBlock Style="{StaticResource HintText}" Margin="0,0,0,16"
+                                   Text="Starts quietly in the tray when you sign in, so your reading shortcut is ready right away." />
+
+                        <TextBlock Text="UPDATES" Style="{StaticResource SectionHeader}" />
+                        <CheckBox x:Name="AutoUpdateCheckBox" Content="Download new versions automatically" />
+                        <TextBlock Style="{StaticResource HintText}"
+                                   Text="Checks GitHub for a new release every few hours. A downloaded update installs the next time MagniReader starts, or when you choose Restart to update in the tray menu. Your settings and the Kokoro model are kept." />
+
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                            <Button x:Name="CheckUpdatesBtn" Content="🔄 Check for updates now"
+                                    Click="CheckUpdates_Click" />
+                            <Button x:Name="RestartToUpdateBtn" Content="⬆ Restart to update"
+                                    Style="{StaticResource PrimaryButton}" Margin="8,0,0,0"
+                                    Visibility="Collapsed" Click="RestartToUpdate_Click" />
+                        </StackPanel>
+                        <TextBlock x:Name="UpdateStatusText" FontSize="12" Foreground="#A6ADC8"
+                                   TextWrapping="Wrap" Margin="0,0,0,16" />
+
+                        <TextBlock Text="ABOUT" Style="{StaticResource SectionHeader}" />
+                        <Border Style="{StaticResource Card}">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <Image Source="/assets/magnireader.png" Width="56" Height="56" Margin="0,0,14,0"
+                                       RenderOptions.BitmapScalingMode="HighQuality" VerticalAlignment="Center" />
+                                <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                    <TextBlock Text="MagniReader" FontSize="16" FontWeight="Bold" />
+                                    <TextBlock x:Name="VersionText" FontSize="12" Foreground="#A6ADC8" Margin="0,2,0,4" />
+                                    <TextBlock FontSize="12">
+                                        <Hyperlink Foreground="#89B4FA"
+                                                   RequestNavigate="Hyperlink_RequestNavigate"
+                                                   NavigateUri="https://github.com/arcb01/magnireader">
+                                            GitHub
+                                        </Hyperlink>
+                                        <Run Text="  ·  " Foreground="#6C7086" />
+                                        <Hyperlink x:Name="ReleaseNotesLink" Foreground="#89B4FA"
+                                                   RequestNavigate="Hyperlink_RequestNavigate"
+                                                   NavigateUri="https://github.com/arcb01/magnireader/releases">
+                                            Release notes
+                                        </Hyperlink>
+                                        <Run Text="  ·  " Foreground="#6C7086" />
+                                        <Hyperlink Foreground="#89B4FA"
+                                                   RequestNavigate="Hyperlink_RequestNavigate"
+                                                   NavigateUri="https://github.com/arcb01/magnireader/issues">
+                                            Report a problem
+                                        </Hyperlink>
+                                    </TextBlock>
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+        </TabControl>
+
+        <!-- Footer -->
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+            <Button Content="Save" Width="96" Height="34" IsDefault="False"
+                    Style="{StaticResource PrimaryButton}" Click="Save_Click" />
+            <Button Content="Cancel" Width="96" Height="34" Margin="8,0,0,0" Click="Cancel_Click" />
+        </StackPanel>
+    </Grid>
 </Window>
