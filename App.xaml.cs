@@ -32,6 +32,8 @@ public partial class App : Application
     private SettingsStore? _settingsStore;
     private VisionAnalyzer? _visionAnalyzer;
     private HoverHighlightWindow? _hoverHighlight;
+    private ControlBarWindow? _controlBar;
+    private bool _toldAboutTray;
 
     private bool _isReading;
     private string _currentReadingText = string.Empty;
@@ -129,6 +131,8 @@ public partial class App : Application
         _inputManager.SnipTriggered += OnSnipTriggered;
         _inputManager.HoverPreview += OnHoverPreview;
         _inputManager.HoverEnd += OnHoverEnd;
+        _inputManager.PickModeChanged += armed => _controlBar?.SetPickArmed(armed);
+        _inputManager.IsOwnUiAt = (x, y) => _controlBar?.ContainsScreenPoint(x, y) == true;
         _speechEngine.WordReached += OnWordReached;
         _speechEngine.SpeechCompleted += OnSpeechCompleted;
 
@@ -140,6 +144,9 @@ public partial class App : Application
 
         // Setup tray icon
         SetupTrayIcon();
+
+        // Compact control bar (like the Magnifier toolbar)
+        SetupControlBar();
 
         // Show voice diagnostic on startup
         ShowVoiceDiagnostic();
@@ -199,6 +206,10 @@ public partial class App : Application
         // Create context menu
         var contextMenu = new System.Windows.Controls.ContextMenu();
 
+        var barItem = new System.Windows.Controls.MenuItem { Header = "▭ Show control bar" };
+        barItem.Click += (s, e) => ShowControlBar();
+        contextMenu.Items.Add(barItem);
+
         var settingsItem = new System.Windows.Controls.MenuItem { Header = "⚙ Settings" };
         settingsItem.Click += (s, e) => OpenSettings();
         contextMenu.Items.Add(settingsItem);
@@ -241,7 +252,103 @@ public partial class App : Application
         contextMenu.Items.Add(exitItem);
 
         _trayIcon.ContextMenu = contextMenu;
-        _trayIcon.TrayMouseDoubleClick += (s, e) => OpenSettings();
+        _trayIcon.TrayMouseDoubleClick += (s, e) => ShowControlBar();
+    }
+
+    // ─── Control Bar ────────────────────────────────────────────
+
+    private void SetupControlBar()
+    {
+        var s = _settingsStore!.Settings;
+        _controlBar = new ControlBarWindow(s.ControlBarLeft, s.ControlBarTop);
+        RefreshControlBar();
+
+        _controlBar.ReadRequested += () =>
+            _inputManager!.ArmPickMode(!_inputManager.IsPickArmed);
+        _controlBar.StopRequested += () =>
+        {
+            _inputManager?.ArmPickMode(false);
+            StopReading();
+        };
+        _controlBar.RateChangeRequested += delta =>
+        {
+            var settings = _settingsStore!.Settings;
+            settings.SpeechRate = Math.Clamp(settings.SpeechRate + delta, -10, 10);
+            _speechEngine?.SetRate(settings.SpeechRate);
+            _settingsStore.Save();
+            RefreshControlBar();
+        };
+        _controlBar.EngineToggleRequested += ToggleSpeechEngine;
+        _controlBar.SnipRequested += OnSnipTriggered;
+        _controlBar.SettingsRequested += OpenSettings;
+        _controlBar.MinimizeRequested += HideControlBar;
+        _controlBar.ExitRequested += ExitApplication;
+        _controlBar.Moved += (left, top) =>
+        {
+            _settingsStore!.Settings.ControlBarLeft = left;
+            _settingsStore.Settings.ControlBarTop = top;
+            _settingsStore.Save();
+        };
+
+        if (s.ShowControlBar)
+            _controlBar.Show();
+    }
+
+    private void RefreshControlBar()
+    {
+        if (_controlBar == null || _settingsStore == null) return;
+        var s = _settingsStore.Settings;
+        _controlBar.SetRate(s.SpeechRate);
+        _controlBar.SetEngine(string.Equals(s.SpeechEngine, "Kokoro", StringComparison.OrdinalIgnoreCase));
+        _controlBar.SetReading(_isReading);
+    }
+
+    private void ShowControlBar()
+    {
+        if (_controlBar == null) return;
+        _controlBar.Show();
+        _settingsStore!.Settings.ShowControlBar = true;
+        _settingsStore.Save();
+    }
+
+    private void HideControlBar()
+    {
+        if (_controlBar == null) return;
+        _inputManager?.ArmPickMode(false);
+        _controlBar.Hide();
+        _settingsStore!.Settings.ShowControlBar = false;
+        _settingsStore.Save();
+
+        if (!_toldAboutTray)
+        {
+            _toldAboutTray = true;
+            _trayIcon?.ShowBalloonTip(
+                "MagniReader is still running",
+                "Ctrl+Alt+Click still reads text.\nDouble-click the tray icon to bring the bar back.",
+                BalloonIcon.Info);
+        }
+    }
+
+    private void ToggleSpeechEngine()
+    {
+        var s = _settingsStore!.Settings;
+        bool toKokoro = !string.Equals(s.SpeechEngine, "Kokoro", StringComparison.OrdinalIgnoreCase);
+
+        if (toKokoro && !KokoroSpeaker.IsModelDownloaded)
+        {
+            // The model has to be downloaded first; that lives in Settings.
+            _trayIcon?.ShowBalloonTip(
+                "Kokoro voices not downloaded",
+                "Pick Kokoro in Settings → Speech and download its model first.",
+                BalloonIcon.Info);
+            OpenSettings();
+            return;
+        }
+
+        s.SpeechEngine = toKokoro ? "Kokoro" : "Windows";
+        _speechEngine?.ConfigureKokoro(s);
+        _settingsStore.Save();
+        RefreshControlBar();
     }
 
     /// <summary>
@@ -267,6 +374,14 @@ public partial class App : Application
     private void OnHoverPreview(int x, int y)
     {
         if (_isReading) return;
+
+        // Don't highlight the control bar's own buttons while pick mode is armed.
+        if (_controlBar?.ContainsScreenPoint(x, y) == true)
+        {
+            _lastHoverRect = Rect.Empty;
+            _hoverHighlight?.HideHighlight();
+            return;
+        }
 
         try
         {
@@ -355,6 +470,7 @@ public partial class App : Application
 
             _isReading = true;
             _inputManager!.SetReadingState(true);
+            _controlBar?.SetReading(true);
 
             System.Diagnostics.Debug.WriteLine(
                 $"[App] Starting reading first element immediately (siblings deferred)");
@@ -401,6 +517,7 @@ public partial class App : Application
         System.Diagnostics.Debug.WriteLine("[App] StopReading");
         _isReading = false;
         _inputManager?.SetReadingState(false);
+        _controlBar?.SetReading(false);
 
         // Cancel speech FIRST (this may trigger SpeechCompleted callback,
         // but _isReading is already false so it'll be a no-op)
@@ -535,6 +652,7 @@ public partial class App : Application
         _speechEngine?.ConfigureKokoro(settings);
         _speechEngine?.ConfigureDucking(settings);
         _overlay?.UpdateSettings(settings.DimOpacity, settings.HighlightColor);
+        RefreshControlBar();
     }
 
     private void ExitApplication()

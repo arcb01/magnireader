@@ -28,6 +28,9 @@ public class InputManager : IDisposable
 
     private bool _isReading;
 
+    // "Pick" mode, armed from the control bar's Read button: the next plain click reads.
+    private bool _pickArmed;
+
     // Hover preview throttle
     private DateTime _lastHoverTime = DateTime.MinValue;
     private const int HoverThrottleMs = 150;
@@ -60,6 +63,16 @@ public class InputManager : IDisposable
     /// Fired when Ctrl+Alt is released after hovering, hiding the preview.
     /// </summary>
     public event Action? HoverEnd;
+
+    /// <summary>Fired when pick mode turns on or off (a pick, Esc, or ArmPickMode).</summary>
+    public event Action<bool>? PickModeChanged;
+
+    /// <summary>
+    /// Returns true when a screen point (physical pixels) is on MagniReader's own UI,
+    /// such as the control bar. Clicks there are never swallowed, so its buttons keep working
+    /// while reading or while pick mode is armed.
+    /// </summary>
+    public Func<int, int, bool>? IsOwnUiAt { get; set; }
 
     // ─── Win32 for checking modifier key state ──────────────────
     [DllImport("user32.dll")]
@@ -109,14 +122,50 @@ public class InputManager : IDisposable
         _isReading = isReading;
     }
 
+    /// <summary>
+    /// Arms (or disarms) pick mode: the next left click outside MagniReader's own UI
+    /// reads the text under it, as if Ctrl+Alt were held. Hover preview is shown meanwhile.
+    /// </summary>
+    public void ArmPickMode(bool armed)
+    {
+        if (_pickArmed == armed) return;
+        _pickArmed = armed;
+        if (!armed && _isHovering)
+        {
+            _isHovering = false;
+            HoverEnd?.Invoke();
+        }
+        PickModeChanged?.Invoke(armed);
+    }
+
+    public bool IsPickArmed => _pickArmed;
+
     private IntPtr MouseHookCallback(int nCode, IntPtr wParam, IntPtr lParam)
     {
         if (nCode >= 0 && wParam == (IntPtr)NativeInterop.WM_LBUTTONDOWN)
         {
             bool ctrlHeld = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
             bool altHeld = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+            var click = Marshal.PtrToStructure<MSLLHOOKSTRUCT>(lParam);
+            bool onOwnUi = IsOwnUiAt?.Invoke(click.pt.X, click.pt.Y) == true;
 
-            if (ctrlHeld && altHeld)
+            if (onOwnUi)
+            {
+                // Clicks on the control bar go to its buttons, never cancel or read.
+            }
+            else if (_pickArmed)
+            {
+                // Pick mode → read at the clicked position, like Ctrl+Alt+Click
+                int px = click.pt.X;
+                int py = click.pt.Y;
+                Application.Current?.Dispatcher.BeginInvoke(() =>
+                {
+                    ArmPickMode(false);
+                    ReadTriggered?.Invoke(px, py);
+                });
+                return (IntPtr)1;
+            }
+            else if (ctrlHeld && altHeld)
             {
                 // Ctrl+Alt+Click → trigger reading at click position
                 var hookStruct = Marshal.PtrToStructure<MSLLHOOKSTRUCT>(lParam);
@@ -150,7 +199,7 @@ public class InputManager : IDisposable
             bool ctrlHeld = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
             bool altHeld = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
 
-            if (ctrlHeld && altHeld && !_isReading)
+            if (((ctrlHeld && altHeld) || _pickArmed) && !_isReading)
             {
                 var now = DateTime.UtcNow;
                 if ((now - _lastHoverTime).TotalMilliseconds >= HoverThrottleMs)
@@ -164,7 +213,7 @@ public class InputManager : IDisposable
                     });
                 }
             }
-            else if (_isHovering && !(ctrlHeld && altHeld))
+            else if (_isHovering && !(ctrlHeld && altHeld) && !_pickArmed)
             {
                 _isHovering = false;
                 Application.Current?.Dispatcher.BeginInvoke(() =>
@@ -184,6 +233,11 @@ public class InputManager : IDisposable
         if (nCode >= 0 && wParam == (IntPtr)NativeInterop.WM_KEYDOWN)
         {
             int vkCode = Marshal.ReadInt32(lParam);
+
+            if (vkCode == NativeInterop.VK_ESCAPE && _pickArmed)
+            {
+                Application.Current?.Dispatcher.BeginInvoke(() => ArmPickMode(false));
+            }
 
             if (vkCode == NativeInterop.VK_ESCAPE && _isReading)
             {
@@ -209,7 +263,7 @@ public class InputManager : IDisposable
         }
 
         // Detect Ctrl or Alt key-up → end hover if active
-        if (nCode >= 0 && wParam == (IntPtr)NativeInterop.WM_KEYUP && _isHovering)
+        if (nCode >= 0 && wParam == (IntPtr)NativeInterop.WM_KEYUP && _isHovering && !_pickArmed)
         {
             int vkCode = Marshal.ReadInt32(lParam);
             if (vkCode == VK_CONTROL || vkCode == VK_MENU)
