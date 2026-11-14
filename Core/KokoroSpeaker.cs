@@ -249,8 +249,10 @@ public sealed class KokoroSpeaker : IDisposable
     /// </summary>
     /// <param name="onWord">(charPos, charLen) in <paramref name="text"/>, called from a timer thread.</param>
     /// <param name="onAudioStarted">Called when audio starts, with an estimated total duration in ms.</param>
+    /// <param name="control">Optional: lets the caller pause, resume and seek this reading.</param>
     public async Task<bool> SpeakAsync(string text, string voiceId, float speed,
-        Action<int, int>? onWord, Action<double>? onAudioStarted, CancellationToken token)
+        Action<int, int>? onWord, Action<double>? onAudioStarted, CancellationToken token,
+        KokoroPlaybackControl? control = null)
     {
         var model = _model ?? throw new InvalidOperationException("Kokoro model is not loaded.");
         var voice = GetVoice(voiceId) ?? throw new FileNotFoundException($"Kokoro voice '{voiceId}' not found in {VoicesDirectory}");
@@ -261,7 +263,7 @@ public sealed class KokoroSpeaker : IDisposable
         var chunks = SplitIntoChunks(text);
         if (chunks.Count == 0) return false;
 
-        var provider = new StreamingSampleProvider(SampleRate, () => Volume);
+        var provider = new SeekableSampleProvider(SampleRate, () => Volume);
         // (sample offset in the content timeline, charPos, charLen)
         var timings = new List<(long sample, int pos, int len)>();
         var timingsLock = new object();
@@ -327,6 +329,7 @@ public sealed class KokoroSpeaker : IDisposable
                         started = true;
                         waveOut.Init(new SampleToWaveProvider16(provider));
                         waveOut.Play();
+                        control?.Attach(waveOut, provider); // pauses right away if Pause came early
                         Log($"[Kokoro] Playback started at {sw.ElapsedMilliseconds}ms " +
                             $"(first of {chunks.Count} sentence chunks, {samples.Length * 1000 / SampleRate}ms of audio)");
 
@@ -352,6 +355,7 @@ public sealed class KokoroSpeaker : IDisposable
         }
         finally
         {
+            control?.Detach();
             wordTimer?.Dispose();
         }
     }
@@ -369,26 +373,23 @@ public sealed class KokoroSpeaker : IDisposable
         catch (OperationCanceledException) { }
     }
 
-    private static System.Threading.Timer StartWordTimer(WaveOutEvent waveOut, StreamingSampleProvider provider,
+    private static System.Threading.Timer StartWordTimer(WaveOutEvent waveOut, SeekableSampleProvider provider,
         List<(long sample, int pos, int len)> timings, object timingsLock, Action<int, int> onWord)
     {
         int current = -1;
-        long maxPos = 0;
         return new System.Threading.Timer(_ =>
         {
             try
             {
-                // Bytes actually played (16-bit mono) minus silence inserted while waiting
-                // for synthesis = position in the speech timeline.
-                long pos = waveOut.GetPosition() / 2 - provider.SilenceSamples;
-                if (pos < maxPos) pos = maxPos; // never move backwards
-                maxPos = pos;
+                // Position in the speech that is being heard right now. It moves backwards
+                // after a rewind, so the word is looked up from scratch each time.
+                long pos = provider.HeardPosition(waveOut.GetPosition() / 2);
 
-                int index = current;
+                int index;
                 (long sample, int pos, int len) word = default;
                 lock (timingsLock)
                 {
-                    while (index + 1 < timings.Count && timings[index + 1].sample <= pos) index++;
+                    index = LastAtOrBefore(timings, pos);
                     if (index >= 0) word = timings[index];
                 }
                 if (index == current || index < 0) return;
@@ -397,6 +398,19 @@ public sealed class KokoroSpeaker : IDisposable
             }
             catch { /* device gone or stopped; ignore */ }
         }, null, 0, 30);
+    }
+
+    /// <summary>Index of the last word that starts at or before <paramref name="sample"/>, or -1.</summary>
+    private static int LastAtOrBefore(List<(long sample, int pos, int len)> timings, long sample)
+    {
+        int lo = 0, hi = timings.Count - 1, found = -1;
+        while (lo <= hi)
+        {
+            int mid = (lo + hi) / 2;
+            if (timings[mid].sample <= sample) { found = mid; lo = mid + 1; }
+            else hi = mid - 1;
+        }
+        return found;
     }
 
     // ─── Synthesis + word timing ────────────────────────────────
@@ -646,21 +660,36 @@ public sealed class KokoroSpeaker : IDisposable
     }
 
     /// <summary>
-    /// Feeds synthesized sentences to the sound card as they become ready. While the
-    /// next sentence is still being generated it plays silence (and counts it, so word
-    /// timings stay in sync). Ends once <see cref="Complete"/> was called and all audio
-    /// has been read.
+    /// Feeds synthesized sentences to the sound card as they become ready, and keeps all
+    /// of them so the reading can be rewound or skipped forward. While the next sentence
+    /// is still being generated it plays silence. Ends once <see cref="Complete"/> was
+    /// called and everything up to the end has been read.
+    ///
+    /// Two timelines: "content" samples (the speech itself, what word timings refer to)
+    /// and "output" samples (what was handed to the sound card, including silence and
+    /// jumps). Every Read records which content went to which output position, so the
+    /// position being heard can be found from the device position, even across seeks.
     /// </summary>
-    private sealed class StreamingSampleProvider : ISampleProvider
+    internal sealed class SeekableSampleProvider : ISampleProvider
     {
-        private readonly ConcurrentQueue<float[]> _queue = new();
+        private readonly object _lock = new();
         private readonly Func<float> _volume;
-        private float[]? _current;
-        private int _currentPos;
-        private volatile bool _completed;
-        private long _silenceSamples;
+        private float[] _buffer = new float[SampleRate * 10];
+        private long _length;      // content samples synthesized so far
+        private long _cursor;      // next content sample to hand out
+        private long _outPos;      // output samples handed out so far
+        private bool _completed;
 
-        public StreamingSampleProvider(int sampleRate, Func<float> volume)
+        // Output → content map: (outStart, contentStart, length, silence). Consecutive
+        // reads are merged, so this stays short (it grows by one per seek or underrun).
+        private readonly List<(long outStart, long contentStart, long length, bool silence)> _segments = new();
+
+        // After a seek the sound card still holds a little audio from before it. Until that
+        // has played, report the seek target, so the word box jumps right away.
+        private long _seekOutMark = -1;
+        private long _seekTarget;
+
+        public SeekableSampleProvider(int sampleRate, Func<float> volume)
         {
             WaveFormat = WaveFormat.CreateIeeeFloatWaveFormat(sampleRate, 1);
             _volume = volume;
@@ -668,40 +697,170 @@ public sealed class KokoroSpeaker : IDisposable
 
         public WaveFormat WaveFormat { get; }
 
-        public long SilenceSamples => Interlocked.Read(ref _silenceSamples);
+        public void Enqueue(float[] samples)
+        {
+            lock (_lock)
+            {
+                if (_length + samples.Length > _buffer.Length)
+                {
+                    long size = Math.Max(_buffer.Length * 2L, _length + samples.Length);
+                    Array.Resize(ref _buffer, (int)Math.Min(size, int.MaxValue));
+                }
+                Array.Copy(samples, 0, _buffer, _length, samples.Length);
+                _length += samples.Length;
+            }
+        }
 
-        public void Enqueue(float[] samples) => _queue.Enqueue(samples);
+        public void Complete()
+        {
+            lock (_lock) _completed = true;
+        }
 
-        public void Complete() => _completed = true;
+        /// <summary>
+        /// Moves playback by <paramref name="deltaSamples"/> from the position being heard
+        /// (<paramref name="playedOutputSamples"/> = device position). Clamped to the start,
+        /// and to the end of what has been synthesized so far.
+        /// </summary>
+        /// <returns>True when the jump went past the end of a reading that is fully synthesized.</returns>
+        public bool SeekBy(long playedOutputSamples, long deltaSamples)
+        {
+            lock (_lock)
+            {
+                long heard = HeardPositionLocked(playedOutputSamples);
+                long wanted = heard + deltaSamples;
+                long target = Math.Clamp(wanted, 0, _length);
+                _cursor = target;
+                _seekOutMark = _outPos;
+                _seekTarget = target;
+                return _completed && wanted >= _length;
+            }
+        }
+
+        /// <summary>Content position being heard, from the device position in output samples.</summary>
+        public long HeardPosition(long playedOutputSamples)
+        {
+            lock (_lock) return HeardPositionLocked(playedOutputSamples);
+        }
+
+        private long HeardPositionLocked(long played)
+        {
+            if (_seekOutMark >= 0 && played < _seekOutMark) return _seekTarget;
+            for (int i = _segments.Count - 1; i >= 0; i--)
+            {
+                var seg = _segments[i];
+                if (seg.outStart > played) continue;
+                if (seg.silence) return seg.contentStart;
+                return seg.contentStart + Math.Min(played - seg.outStart, seg.length);
+            }
+            return 0;
+        }
+
+        private void AddSegment(long contentStart, long length, bool silence)
+        {
+            if (length <= 0) return;
+            if (_segments.Count > 0)
+            {
+                var last = _segments[^1];
+                bool contiguous = last.outStart + last.length == _outPos && last.silence == silence &&
+                                  (silence ? last.contentStart == contentStart
+                                           : last.contentStart + last.length == contentStart);
+                if (contiguous)
+                {
+                    _segments[^1] = (last.outStart, last.contentStart, last.length + length, silence);
+                    _outPos += length;
+                    return;
+                }
+            }
+            _segments.Add((_outPos, contentStart, length, silence));
+            _outPos += length;
+        }
 
         public int Read(float[] buffer, int offset, int count)
         {
             float vol = Math.Clamp(_volume(), 0f, 1f);
-            int written = 0;
-            while (written < count)
+            lock (_lock)
             {
-                if (_current == null || _currentPos >= _current.Length)
+                int n = (int)Math.Min(count, _length - _cursor);
+                if (n > 0)
                 {
-                    if (!_queue.TryDequeue(out _current)) { _current = null; break; }
-                    _currentPos = 0;
+                    for (int i = 0; i < n; i++)
+                        buffer[offset + i] = _buffer[_cursor + i] * vol;
+                    AddSegment(_cursor, n, silence: false);
+                    _cursor += n;
                 }
-                int n = Math.Min(count - written, _current.Length - _currentPos);
-                for (int i = 0; i < n; i++)
-                    buffer[offset + written + i] = _current[_currentPos + i] * vol;
-                _currentPos += n;
-                written += n;
-            }
+                else n = 0;
 
-            if (written < count)
-            {
-                bool done = _completed && _queue.IsEmpty;
-                if (done) return written; // 0 here stops playback
+                if (n < count)
+                {
+                    if (_completed) return n; // 0 here stops playback
 
-                // Underrun: next sentence not ready yet
-                Array.Clear(buffer, offset + written, count - written);
-                Interlocked.Add(ref _silenceSamples, count - written);
+                    // Underrun: next sentence not ready yet
+                    Array.Clear(buffer, offset + n, count - n);
+                    AddSegment(_cursor, count - n, silence: true);
+                }
+                return count;
             }
-            return count;
         }
+    }
+}
+
+/// <summary>
+/// Pause / resume / seek for one Kokoro reading. Created by the caller before
+/// <see cref="KokoroSpeaker.SpeakAsync"/>; commands given before the audio starts
+/// (pause while the first sentence is being generated) are applied when it does.
+/// </summary>
+public sealed class KokoroPlaybackControl
+{
+    private readonly object _lock = new();
+    private WaveOutEvent? _waveOut;
+    private KokoroSpeaker.SeekableSampleProvider? _provider;
+    private bool _paused;
+
+    internal void Attach(WaveOutEvent waveOut, KokoroSpeaker.SeekableSampleProvider provider)
+    {
+        lock (_lock)
+        {
+            _waveOut = waveOut;
+            _provider = provider;
+            if (_paused) TryRun(waveOut.Pause);
+        }
+    }
+
+    internal void Detach()
+    {
+        lock (_lock) { _waveOut = null; _provider = null; }
+    }
+
+    public void SetPaused(bool paused)
+    {
+        lock (_lock)
+        {
+            _paused = paused;
+            if (_waveOut is { } w) TryRun(paused ? new Action(w.Pause) : new Action(w.Play));
+        }
+    }
+
+    /// <summary>
+    /// Skips forward (positive) or back (negative) by <paramref name="seconds"/>.
+    /// Forward is limited to what has been synthesized so far (usually well ahead).
+    /// Returns true when the jump went past the end of the text, so the caller can
+    /// move on to the next paragraph.
+    /// </summary>
+    public bool SeekBy(double seconds)
+    {
+        lock (_lock)
+        {
+            if (_waveOut is not { } w || _provider is not { } p) return false;
+            try
+            {
+                return p.SeekBy(w.GetPosition() / 2, (long)(seconds * KokoroSpeaker.SampleRate));
+            }
+            catch { return false; /* device gone */ }
+        }
+    }
+
+    private static void TryRun(Action a)
+    {
+        try { a(); } catch { /* device gone or already stopped */ }
     }
 }

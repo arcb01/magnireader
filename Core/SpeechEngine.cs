@@ -71,6 +71,21 @@ public class SpeechEngine : IDisposable
     private string _kokoroVoiceEnglish = KokoroSpeaker.DefaultEnglishVoice;
     private string _kokoroVoiceSpanish = KokoroSpeaker.DefaultSpanishVoice;
 
+    // ─── Pause / seek (reading controls) ────────────────────────
+    private enum PlaybackRoute { None, Kokoro, MediaPlayer, NAudio, Sapi }
+    private volatile PlaybackRoute _route;
+    private volatile bool _isPaused;
+    private KokoroPlaybackControl? _kokoroControl;
+    // Position for the routes that have no player position (NAudio fallback, SAPI estimate)
+    private readonly PlaybackClock _clock = new();
+    // SAPI: estimated time of each word of the current reading, and the last word reached
+    private List<(int charPos, int charLen, TimeSpan offset)>? _sapiEstimate;
+    private volatile int _sapiWordIndex = -1;
+    private volatile bool _sapiGotBookmark;
+    private int _sapiSeekToWord = -1;
+    private ManualResetEventSlim? _sapiWake;
+    private bool _sapiPaused;
+
     public event Action<int, int>? WordReached;
     public event Action? SpeechCompleted;
     public event Action? SpeechStarted;
@@ -78,6 +93,12 @@ public class SpeechEngine : IDisposable
     public event Action<double>? PlaybackStarted;
 
     public bool IsSpeaking => _isSpeaking;
+
+    /// <summary>True while the current reading is paused with <see cref="SetPaused"/>.</summary>
+    public bool IsPaused => _isPaused;
+
+    /// <summary>Raised (on the UI thread) when the reading is paused or resumed.</summary>
+    public event Action<bool>? PauseChanged;
 
     /// <summary>Lowers other apps' audio while speaking (see Settings → Speech).</summary>
     public AudioDucker Ducker { get; } = new();
@@ -226,6 +247,8 @@ public class SpeechEngine : IDisposable
 
         text = CleanForSpeech(text);
         _currentText = text;
+        _route = PlaybackRoute.None;
+        SetPausedFlag(false);
         _cts = new CancellationTokenSource();
         var token = _cts.Token;
         var sw = Stopwatch.StartNew();
@@ -577,6 +600,10 @@ public class SpeechEngine : IDisposable
         }
 
         LogTrace($"[Speech] Route: Kokoro → {voiceId} (lang={lang}, speed={KokoroSpeed:F2})");
+        var control = new KokoroPlaybackControl();
+        if (_isPaused) control.SetPaused(true);
+        _kokoroControl = control;
+        _route = PlaybackRoute.Kokoro;
         _isSpeaking = true;
         SpeechStarted?.Invoke();
         bool audioStarted = false;
@@ -595,7 +622,7 @@ public class SpeechEngine : IDisposable
                     audioStarted = true;
                     System.Windows.Application.Current?.Dispatcher.BeginInvoke(() => PlaybackStarted?.Invoke(estMs));
                 },
-                token);
+                token, control);
         }
         catch (OperationCanceledException)
         {
@@ -605,6 +632,7 @@ public class SpeechEngine : IDisposable
         {
             Infrastructure.CrashLogger.LogError("Kokoro failed before speaking; falling back to a Windows voice", ex);
             _isSpeaking = false;
+            _route = PlaybackRoute.None;
             return false;
         }
         catch (Exception ex)
@@ -618,6 +646,7 @@ public class SpeechEngine : IDisposable
             // Kokoro found nothing it could pronounce: let a Windows voice try
             LogTrace("[Speech] Kokoro produced no audio for this text; using a Windows voice");
             _isSpeaking = false;
+            _route = PlaybackRoute.None;
             return false;
         }
 
@@ -690,8 +719,9 @@ public class SpeechEngine : IDisposable
         LogTrace(
             $"[Speech] MediaPlayer starting playback at {sw.ElapsedMilliseconds}ms");
 
+        _route = PlaybackRoute.MediaPlayer;
         StartWordTimer();
-        _mediaPlayer.Play();
+        if (!_isPaused) _mediaPlayer.Play(); // paused while synthesizing: wait for Resume
 
         // Notify with real duration for accurate progress animation
         System.Windows.Application.Current?.Dispatcher.BeginInvoke(
@@ -761,8 +791,9 @@ public class SpeechEngine : IDisposable
         LogTrace(
             $"[Speech] NAudio starting playback at {sw.ElapsedMilliseconds}ms");
 
+        _route = PlaybackRoute.NAudio;
         StartWordTimer();
-        _waveOut.Play();
+        if (!_isPaused) _waveOut.Play(); // paused while synthesizing: wait for Resume
 
         // Notify with real duration for accurate progress animation
         System.Windows.Application.Current?.Dispatcher.BeginInvoke(
@@ -809,6 +840,7 @@ public class SpeechEngine : IDisposable
                     _persistentSapiSynth?.Dispose();
                     _persistentSapiSynth = null;
                     _currentSapiVoiceName = null;
+                    _sapiPaused = false;
                     try
                     {
                         var created = new SapiSynth.SpeechSynthesizer();
@@ -860,7 +892,8 @@ public class SpeechEngine : IDisposable
             // SpeakProgress has with NaturalVoiceSAPIAdapter.)
             SapiSynth.Prompt? promptForBookmarks = null;
             List<(int start, int length)>? bookmarkWordsRef = null;
-            bool gotBookmark = false;
+            _sapiGotBookmark = false;
+            _sapiWordIndex = -1;
             void onBookmark(object? s, SapiSynth.BookmarkReachedEventArgs e)
             {
                 try
@@ -871,12 +904,13 @@ public class SpeechEngine : IDisposable
                     if (!int.TryParse(e.Bookmark.AsSpan(1), System.Globalization.NumberStyles.None,
                             System.Globalization.CultureInfo.InvariantCulture, out int i) || i < 0 || i >= words.Count) return;
 
-                    if (!gotBookmark)
+                    if (!_sapiGotBookmark)
                     {
-                        gotBookmark = true;
+                        _sapiGotBookmark = true;
                         StopWordTimer(); // real timings from now on
                         LogTrace("[Speech] Word timing: SAPI bookmarks (real)");
                     }
+                    _sapiWordIndex = i;
                     var (charPos, charLen) = words[i];
                     System.Windows.Application.Current?.Dispatcher.BeginInvoke(() =>
                     {
@@ -895,6 +929,10 @@ public class SpeechEngine : IDisposable
                 BuildEstimatedWordTimings(text);
                 var bookmarkWords = TokenizeWords(text);
                 bookmarkWordsRef = bookmarkWords;
+                // For rewind / forward: SAPI can't seek, so it restarts from a word
+                _sapiEstimate = _wordTimings;
+                Interlocked.Exchange(ref _sapiSeekToWord, -1);
+                _sapiWake = doneEvent;
 
                 LogTrace(
                     $"[Speech] SAPI5 SpeakAsync at {sw.ElapsedMilliseconds}ms");
@@ -908,6 +946,8 @@ public class SpeechEngine : IDisposable
                     return ex;
                 }
                 promptForBookmarks = prompt;
+                _route = PlaybackRoute.Sapi;
+                if (_isPaused) SetSapiPaused(true); // paused before the voice started
 
                 // Start timer-based word tracking
                 _useMediaPlayerForWordTimer = false;
@@ -925,6 +965,42 @@ public class SpeechEngine : IDisposable
                     while (!token.IsCancellationRequested)
                     {
                         if (completions.TryGetValue(prompt, out error)) break;
+
+                        // Rewind / forward: SAPI can't seek inside a prompt, so the
+                        // current prompt is dropped and a new one starts at the target word.
+                        int seekTo = Interlocked.Exchange(ref _sapiSeekToWord, -1);
+                        if (seekTo >= 0 && seekTo < bookmarkWords.Count)
+                        {
+                            LogTrace($"[Speech] SAPI5 restarting at word {seekTo + 1}/{bookmarkWords.Count}");
+                            bool wasPaused = _sapiPaused;
+                            // A paused synthesizer doesn't finish a cancel until it resumes
+                            if (wasPaused) SetSapiPaused(false);
+                            try { synth.SpeakAsyncCancel(prompt); } catch { }
+                            try
+                            {
+                                prompt = synth.SpeakAsync(BuildBookmarkedPrompt(text, bookmarkWords, synth, seekTo));
+                            }
+                            catch (Exception ex)
+                            {
+                                error = ex;
+                                break;
+                            }
+                            promptForBookmarks = prompt;
+                            if (wasPaused) SetSapiPaused(true);
+
+                            _sapiWordIndex = seekTo;
+                            var estimate = _sapiEstimate;
+                            if (estimate != null && seekTo < estimate.Count)
+                                _clock.Set(estimate[seekTo].offset); // estimated highlight follows
+                            var (seekPos, seekLen) = bookmarkWords[seekTo];
+                            System.Windows.Application.Current?.Dispatcher.BeginInvoke(() =>
+                            {
+                                if (_isSpeaking && !token.IsCancellationRequested)
+                                    WordReached?.Invoke(seekPos, seekLen);
+                            });
+                            continue;
+                        }
+
                         doneEvent.Wait(100, token);
                         doneEvent.Reset();
                     }
@@ -955,11 +1031,190 @@ public class SpeechEngine : IDisposable
             }
             finally
             {
+                _sapiWake = null;
                 synth.SpeakCompleted -= onDone;
                 synth.BookmarkReached -= onBookmark;
                 StopWordTimer();
             }
         }, token);
+    }
+
+    // ─── Pause / rewind / forward ───────────────────────────────
+
+    /// <summary>
+    /// Pauses or resumes the current reading. Works on every route; a pause asked for
+    /// while the voice is still being prepared is applied when audio starts.
+    /// Other apps' audio comes back up while paused. Call on the UI thread.
+    /// </summary>
+    public void SetPaused(bool paused)
+    {
+        if (!_isSpeaking || paused == _isPaused) return;
+        LogTrace($"[Speech] {(paused ? "Pause" : "Resume")} ({_route})");
+
+        switch (_route)
+        {
+            case PlaybackRoute.Kokoro:
+                _kokoroControl?.SetPaused(paused);
+                break;
+            case PlaybackRoute.MediaPlayer:
+                try { if (paused) _mediaPlayer?.Pause(); else _mediaPlayer?.Play(); } catch { }
+                break;
+            case PlaybackRoute.NAudio:
+                try { if (paused) _waveOut?.Pause(); else _waveOut?.Play(); } catch { }
+                break;
+            case PlaybackRoute.Sapi:
+                SetSapiPaused(paused);
+                break;
+        }
+
+        if (paused) _clock.Pause(); else _clock.Resume();
+        if (paused) Ducker.ScheduleRestore(); else Ducker.Duck();
+        SetPausedFlag(paused);
+    }
+
+    public void TogglePause() => SetPaused(!_isPaused);
+
+    /// <summary>
+    /// Jumps forward (positive) or back (negative) in the current text.
+    ///   - Kokoro, Windows voices through MediaPlayer/NAudio: exact, on the audio itself.
+    ///   - SAPI voices can't seek: speech restarts at the word estimated to be that many
+    ///     seconds away, so the jump is approximate.
+    /// Back stops at the start of the text; forward past its end moves on to the next
+    /// paragraph, like when it finishes. Call on the UI thread.
+    /// </summary>
+    public void SkipSeconds(double seconds)
+    {
+        if (!_isSpeaking || seconds == 0) return;
+        LogTrace($"[Speech] Skip {seconds:+0;-0}s ({_route})");
+
+        switch (_route)
+        {
+            case PlaybackRoute.Kokoro:
+                if (_kokoroControl?.SeekBy(seconds) == true) FinishEarly();
+                break;
+
+            case PlaybackRoute.MediaPlayer:
+                try
+                {
+                    var session = _mediaPlayer?.PlaybackSession;
+                    if (session == null) return;
+                    var target = session.Position + TimeSpan.FromSeconds(seconds);
+                    if (target < TimeSpan.Zero) target = TimeSpan.Zero;
+                    var duration = session.NaturalDuration;
+                    if (duration > TimeSpan.Zero && target >= duration) { FinishEarly(); return; }
+                    session.Position = target;
+                }
+                catch (Exception ex) { LogTrace($"[Speech] MediaPlayer seek failed: {ex.Message}"); }
+                break;
+
+            case PlaybackRoute.NAudio:
+                try
+                {
+                    var reader = _currentReader;
+                    if (reader == null) return;
+                    var target = _clock.Now + TimeSpan.FromSeconds(seconds);
+                    if (target < TimeSpan.Zero) target = TimeSpan.Zero;
+                    if (target >= reader.TotalTime) { FinishEarly(); return; }
+                    reader.CurrentTime = target;
+                    _clock.Set(target);
+                }
+                catch (Exception ex) { LogTrace($"[Speech] NAudio seek failed: {ex.Message}"); }
+                break;
+
+            case PlaybackRoute.Sapi:
+                SeekSapi(seconds);
+                break;
+        }
+    }
+
+    private void SeekSapi(double seconds)
+    {
+        var estimate = _sapiEstimate;
+        if (estimate == null || estimate.Count == 0) return;
+
+        // Where we are on the estimated timeline: the last bookmark the voice reached,
+        // or the estimate clock for voices without bookmarks.
+        int current = _sapiGotBookmark ? _sapiWordIndex : -1;
+        TimeSpan now = current >= 0 && current < estimate.Count
+            ? estimate[current].offset
+            : _clock.Now;
+        var target = now + TimeSpan.FromSeconds(seconds);
+
+        if (target > estimate[^1].offset)
+        {
+            if (seconds > 0) FinishEarly();
+            return;
+        }
+
+        int index = 0;
+        for (int i = 0; i < estimate.Count; i++)
+        {
+            if (estimate[i].offset <= target) index = i;
+            else break;
+        }
+        // The jump must move at least one word, even when the estimate is coarse
+        if (seconds < 0 && current >= 0 && index >= current) index = Math.Max(0, current - 1);
+        if (seconds > 0 && current >= 0 && index <= current)
+        {
+            if (current + 1 >= estimate.Count) { FinishEarly(); return; }
+            index = current + 1;
+        }
+
+        Interlocked.Exchange(ref _sapiSeekToWord, index);
+        try { _sapiWake?.Set(); } catch (ObjectDisposedException) { }
+    }
+
+    private void SetSapiPaused(bool paused)
+    {
+        try
+        {
+            lock (_sapiLock)
+            {
+                var synth = _persistentSapiSynth;
+                if (synth == null || paused == _sapiPaused) return;
+                if (paused) synth.Pause(); else synth.Resume();
+                _sapiPaused = paused;
+            }
+        }
+        catch { }
+    }
+
+    /// <summary>Ends the current text as if it had finished, so the next one is read.</summary>
+    private void FinishEarly()
+    {
+        // Cancel() raises SpeechCompleted, which moves the reading on to the next
+        // paragraph (StopReading clears its own flag first, so it isn't affected).
+        Cancel();
+    }
+
+    private void SetPausedFlag(bool paused)
+    {
+        if (_isPaused == paused) return;
+        _isPaused = paused;
+        PauseChanged?.Invoke(paused);
+    }
+
+    /// <summary>A stopwatch that can be paused and moved, for routes with no player position.</summary>
+    private sealed class PlaybackClock
+    {
+        private readonly object _lock = new();
+        private readonly Stopwatch _sw = new();
+        private TimeSpan _base;
+
+        public TimeSpan Now { get { lock (_lock) return _base + _sw.Elapsed; } }
+
+        public void Restart(TimeSpan at, bool paused)
+        {
+            lock (_lock) { _base = at; _sw.Reset(); if (!paused) _sw.Start(); }
+        }
+
+        public void Set(TimeSpan at)
+        {
+            lock (_lock) { _base = at; bool running = _sw.IsRunning; _sw.Reset(); if (running) _sw.Start(); }
+        }
+
+        public void Pause() { lock (_lock) _sw.Stop(); }
+        public void Resume() { lock (_lock) _sw.Start(); }
     }
 
     // ─── Cancel / Cleanup ────────────────────────────────────────
@@ -985,9 +1240,14 @@ public class SpeechEngine : IDisposable
 
         CleanupStreamResources();
 
-        // Cancel SAPI5
+        // Cancel SAPI5 (a paused synthesizer only finishes the cancel once resumed)
         try { _persistentSapiSynth?.SpeakAsyncCancelAll(); }
         catch { }
+        SetSapiPaused(false);
+
+        _route = PlaybackRoute.None;
+        _kokoroControl = null;
+        SetPausedFlag(false);
 
         if (_isSpeaking)
         {
@@ -1107,14 +1367,14 @@ public class SpeechEngine : IDisposable
     /// doesn't switch to another voice.
     /// </summary>
     private static SapiSynth.PromptBuilder BuildBookmarkedPrompt(
-        string text, List<(int start, int length)> words, SapiSynth.SpeechSynthesizer synth)
+        string text, List<(int start, int length)> words, SapiSynth.SpeechSynthesizer synth, int fromWord = 0)
     {
         CultureInfo culture;
         try { culture = synth.Voice?.Culture ?? CultureInfo.CurrentUICulture; }
         catch { culture = CultureInfo.CurrentUICulture; }
 
         var pb = new SapiSynth.PromptBuilder(culture);
-        for (int i = 0; i < words.Count; i++)
+        for (int i = Math.Max(0, fromWord); i < words.Count; i++)
         {
             int start = words[i].start;
             int end = i + 1 < words.Count ? words[i + 1].start : text.Length;
@@ -1219,15 +1479,16 @@ public class SpeechEngine : IDisposable
     /// Raises WordReached each time speech moves on to a new word.
     /// With the MediaPlayer path the real playback position is used, so the
     /// highlight stays in sync even if audio output starts late or stutters.
-    /// Otherwise elapsed wall-clock time is used.
+    /// Otherwise a clock that stops while paused and jumps on rewind / forward is used.
+    /// The word is looked up from the position every tick, so it can move backwards.
     /// </summary>
     private void StartWordTimer()
     {
         StopWordTimer();
         var timings = _wordTimings;
+        _clock.Restart(TimeSpan.Zero, paused: _isPaused);
         if (timings.Count == 0) return;
 
-        var stopwatch = Stopwatch.StartNew();
         bool useMediaPlayer = _useMediaPlayerForWordTimer;
         int currentIndex = -1;
 
@@ -1235,7 +1496,7 @@ public class SpeechEngine : IDisposable
         {
             if (!_isSpeaking) return;
 
-            TimeSpan elapsed = stopwatch.Elapsed;
+            TimeSpan elapsed = _clock.Now;
             if (useMediaPlayer)
             {
                 try
@@ -1243,16 +1504,20 @@ public class SpeechEngine : IDisposable
                     var session = _mediaPlayer?.PlaybackSession;
                     if (session != null) elapsed = session.Position;
                 }
-                catch { /* keep wall-clock time */ }
+                catch { /* keep the clock */ }
             }
 
-            int index = currentIndex < 0 ? 0 : currentIndex;
-            while (index < timings.Count - 1 && timings[index + 1].offset <= elapsed)
-                index++;
+            // Last word that starts at or before the position
+            int lo = 0, hi = timings.Count - 1, index = -1;
+            while (lo <= hi)
+            {
+                int mid = (lo + hi) / 2;
+                if (timings[mid].offset <= elapsed) { index = mid; lo = mid + 1; }
+                else hi = mid - 1;
+            }
 
             // Don't highlight the first word before it is actually spoken
-            if (index == 0 && timings[0].offset > elapsed) return;
-            if (index == currentIndex) return;
+            if (index < 0 || index == currentIndex) return;
             currentIndex = index;
 
             var (charPos, charLen, _) = timings[index];

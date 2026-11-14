@@ -41,6 +41,13 @@ public partial class App : Application
     private ControlBarWindow? _controlBar;
     private bool _toldAboutTray;
 
+    // Pause / back 10 s / forward 10 s, floating on top of the box being read
+    private PlaybackStripWindow? _playbackStrip;
+    private bool _playbackStripShown;
+    // Texts shorter than this (about 5 seconds of speech) don't get the controls,
+    // unless the reading goes on to more paragraphs.
+    private const int MinCharsForPlaybackControls = 80;
+
     private bool _isReading;
     private string _currentReadingText = string.Empty;
 
@@ -144,9 +151,12 @@ public partial class App : Application
         _inputManager.HoverPreview += OnHoverPreview;
         _inputManager.HoverEnd += OnHoverEnd;
         _inputManager.PickModeChanged += armed => _controlBar?.SetPickArmed(armed);
-        _inputManager.IsOwnUiAt = (x, y) => _controlBar?.ContainsScreenPoint(x, y) == true;
+        _inputManager.IsOwnUiAt = (x, y) =>
+            _controlBar?.ContainsScreenPoint(x, y) == true ||
+            _playbackStrip?.ContainsScreenPoint(x, y) == true;
         _speechEngine.WordReached += OnWordReached;
         _speechEngine.SpeechCompleted += OnSpeechCompleted;
+        SetupPlaybackStrip();
 
         // Initialize vision analyzer
         _visionAnalyzer = new VisionAnalyzer();
@@ -258,6 +268,7 @@ public partial class App : Application
             "with automatic language detection.\n\n" +
             "How to use:\n" +
             "• Ctrl+Alt+Click — Read text at cursor\n" +
+            "• Controls above the box — Pause, back/forward 10 s\n" +
             "• Left Click or Esc — Stop reading\n\n" +
             "Built with ❤ using Windows UI Automation.",
             "About MagniReader",
@@ -288,6 +299,42 @@ public partial class App : Application
 
         _trayIcon.ContextMenu = contextMenu;
         _trayIcon.TrayMouseDoubleClick += (s, e) => ShowControlBar();
+    }
+
+    // ─── Playback controls over the reading box ─────────────────
+
+    private void SetupPlaybackStrip()
+    {
+        _playbackStrip = new PlaybackStripWindow();
+        _playbackStrip.PlayPauseRequested += () => { if (_isReading) _speechEngine?.TogglePause(); };
+        _playbackStrip.SkipRequested += seconds => { if (_isReading) _speechEngine?.SkipSeconds(seconds); };
+        _playbackStrip.StopRequested += () =>
+        {
+            _inputManager?.ArmPickMode(false);
+            StopReading();
+        };
+        _speechEngine!.PauseChanged += paused =>
+        {
+            _playbackStrip?.SetPaused(paused);
+            if (_trayIcon != null && _isReading && paused)
+                _trayIcon.ToolTipText = "MagniReader — Paused";
+        };
+        _overlay!.HighlightBoxChanged += box =>
+        {
+            if (!_isReading || _playbackStrip == null) return;
+            if (!_playbackStripShown &&
+                _currentReadingText.Length < MinCharsForPlaybackControls && _readingQueue.Count <= 1)
+                return;
+            _playbackStripShown = true;
+            _playbackStrip.SetPaused(_speechEngine?.IsPaused == true);
+            _playbackStrip.ShowAt(box);
+        };
+    }
+
+    private void HidePlaybackStrip()
+    {
+        _playbackStripShown = false;
+        _playbackStrip?.Hide();
     }
 
     // ─── Control Bar ────────────────────────────────────────────
@@ -499,6 +546,7 @@ public partial class App : Application
             }
 
             // Start with just the first element — speak immediately
+            _playbackStripShown = false;
             _readingQueue = new List<TextExtractor.TextElement> { firstElement };
             _readingCulture = null;
             _readingIndex = 0;
@@ -558,6 +606,7 @@ public partial class App : Application
         // but _isReading is already false so it'll be a no-op)
         _speechEngine?.Cancel();
         _overlay?.HideOverlay();
+        HidePlaybackStrip();
 
         _wordLocator?.Dispose();
         _wordLocator = null;

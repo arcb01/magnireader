@@ -32,6 +32,15 @@ public partial class OverlayWindow : Window
     private Rect _wordRect = Rect.Empty;
     private static readonly Duration WordMoveDuration = new(TimeSpan.FromMilliseconds(60));
 
+    /// <summary>
+    /// Raised when the highlighted box is placed or moves to another element.
+    /// Gives the box in screen DIPs (for the playback controls that sit on top of it).
+    /// </summary>
+    public event Action<Rect>? HighlightBoxChanged;
+
+    /// <summary>The highlighted box in screen DIPs.</summary>
+    public Rect HighlightBoxOnScreen => new(_holeRect.X + Left, _holeRect.Y + Top, _holeRect.Width, _holeRect.Height);
+
     public OverlayWindow()
     {
         InitializeComponent();
@@ -90,6 +99,7 @@ public partial class OverlayWindow : Window
 
         Visibility = Visibility.Visible;
         Activate();
+        HighlightBoxChanged?.Invoke(HighlightBoxOnScreen);
     }
 
     /// <summary>
@@ -108,6 +118,7 @@ public partial class OverlayWindow : Window
 
             // New element: the word box reappears on its first word
             HideWordBox();
+            HighlightBoxChanged?.Invoke(HighlightBoxOnScreen);
         });
     }
 
