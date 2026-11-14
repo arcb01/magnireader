@@ -626,6 +626,7 @@ public partial class App : Application
             // FAST PATH: Extract only the first element (siblings are collected later)
             TextExtractor.TextElement? firstElement;
             TextExtractor.ExtractionContext? extractionContext;
+            bool uiaTimedOut = false;
             try
             {
                 (firstElement, extractionContext) = await _uia.RunAsync(
@@ -633,34 +634,60 @@ public partial class App : Application
             }
             catch (TimeoutException)
             {
-                if (session != _readingSession) return;
-                _trayIcon?.ShowBalloonTip("MagniReader",
-                    "That app isn't responding, so its text can't be read right now.", BalloonIcon.Warning);
-                return;
+                // The app is busy (a big Word document can be slow to answer): try OCR.
+                firstElement = null;
+                extractionContext = null;
+                uiaTimedOut = true;
             }
             if (session != _readingSession) return; // the user clicked again or stopped meanwhile
             System.Diagnostics.Debug.WriteLine($"[App] ⏱ Fast text extraction: {pipelineSw.ElapsedMilliseconds}ms");
 
-            // Nothing exposed through UI Automation: try reading the screen with OCR.
-            if (firstElement == null || string.IsNullOrWhiteSpace(firstElement.Text))
+            bool uiaFound = firstElement != null && !string.IsNullOrWhiteSpace(firstElement.Text);
+            string where = uiaTimedOut ? "app not responding" : extractionContext?.Where ?? "?";
+            var queue = new List<TextExtractor.TextElement>();
+
+            // Nothing exposed through UI Automation, or text that may not be what's under
+            // the click (Word's "Page 1" label, Google Docs drawing its text on a canvas):
+            // read the screen with OCR, and keep the UI Automation text only if OCR finds nothing.
+            if (!uiaFound || firstElement!.Uncertain)
             {
-                extractionContext = null;
-                firstElement = await Task.Run(() => OcrReader.ReadParagraphAtAsync(clickX, clickY));
+                var ocr = await Task.Run(() => OcrReader.ReadParagraphsFromAsync(clickX, clickY));
                 if (session != _readingSession) return;
-                if (firstElement != null)
-                    CrashLogger.LogTrace($"[App] OCR fallback: {firstElement.Text.Length} chars in {pipelineSw.ElapsedMilliseconds}ms");
+                if (ocr.Count > 0)
+                {
+                    CrashLogger.LogInfo($"[Read] {where}: OCR read {ocr.Count} paragraph(s), {ocr[0].Text.Length} chars first " +
+                                        $"(UI Automation: {(uiaFound ? extractionContext!.Method + ", uncertain" : "nothing")}) " +
+                                        $"in {pipelineSw.ElapsedMilliseconds}ms");
+                    queue = ocr;
+                    extractionContext = null; // the following paragraphs came with the OCR
+                }
             }
 
-            if (firstElement == null || string.IsNullOrWhiteSpace(firstElement.Text))
+            if (queue.Count == 0 && uiaFound)
             {
+                CrashLogger.LogInfo($"[Read] {where}: UI Automation {extractionContext?.Method}" +
+                                    $"{(firstElement!.Uncertain ? " (uncertain, OCR found nothing)" : "")}, " +
+                                    $"{firstElement.Text.Length} chars in {pipelineSw.ElapsedMilliseconds}ms");
+                queue.Add(firstElement);
+            }
+
+            if (queue.Count == 0)
+            {
+                bool ocrAvailable = OcrReader.IsAvailable;
+                CrashLogger.LogInfo($"[Read] {where}: nothing found at ({clickX},{clickY}); OCR {(ocrAvailable ? "found no text" : "not installed")}");
                 _trayIcon?.ShowBalloonTip(
                     "MagniReader",
-                    "No readable text found at clicked position.",
+                    uiaTimedOut
+                        ? "That app isn't responding, so its text can't be read right now."
+                        : ocrAvailable
+                        ? "No readable text found at clicked position."
+                        : "No readable text found here. This app doesn't share its text, and Windows text " +
+                          "recognition (OCR) isn't installed: add a language with OCR in Windows Settings › Language.",
                     BalloonIcon.Warning);
                 return;
             }
 
-            BeginReading(new List<TextExtractor.TextElement> { firstElement }, session, pipelineSw);
+            BeginReading(queue, session, pipelineSw);
 
             // Collect the following paragraphs in the background while speech is already playing
             if (extractionContext != null)
@@ -738,7 +765,12 @@ public partial class App : Application
             }
             else
             {
-                // No selection visible to UI Automation: read what's on the clipboard.
+                // No selection visible to UI Automation (Google Docs draws its text on a
+                // canvas): ask the app to copy it, then read the clipboard. When the app
+                // copies nothing, this reads what was already on the clipboard.
+                bool copied = await SelectionCopier.TryCopyFromForegroundAsync();
+                if (session != _readingSession) return;
+                CrashLogger.LogInfo($"[Read] Selection not visible to UI Automation; {(copied ? "copied it with Ctrl+C" : "reading the clipboard")}");
                 string clip = "";
                 try { if (Clipboard.ContainsText()) clip = Clipboard.GetText(); }
                 catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[App] Clipboard busy: {ex.Message}"); }

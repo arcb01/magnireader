@@ -181,7 +181,8 @@ Screenshots are sent only to the provider you choose, and only when you take one
 <details>
 <summary><strong>Technical details</strong></summary>
 
-- **Text extraction**: Windows UI Automation (`TextPattern`, `ValuePattern`, `Name`). Reads the clicked element plus the elements that follow it, moving the highlight to each one.
+- **Text extraction**: Windows UI Automation (`TextPattern`, `ValuePattern`, `Name`). Reads the clicked element plus the elements that follow it, moving the highlight to each one. When an app gives no text, or text that isn't under the click (Google Docs draws its pages on a canvas; Word can answer with a "Page 1" label), the area around the click is read with Windows OCR instead, paragraph by paragraph.
+- **Reading a selection**: taken from UI Automation; when the app doesn't share it (Google Docs), MagniReader presses Ctrl+C for you in browsers and document apps and reads what was copied.
 - **Language detection**: common-word counts first, then character trigram profiles. Falls back to the system UI language for very short text.
 - **Speech**: Kokoro runs on ONNX Runtime (CPU) through KokoroSharp. Windows voices go through WinRT `SpeechSynthesizer`, or SAPI5 for adapter voices.
 - **Voice selection**: prefers neural voices, then the regional variant matching your locale (es-ES vs es-MX, en-US vs en-GB), then multilingual voices, then any voice.
