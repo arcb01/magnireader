@@ -41,4 +41,17 @@
     <Resource Include="assets\magnireader.png" />
   </ItemGroup>
 
+  <!-- KokoroSharp copies its voices into the build output only (AfterTargets="Build"),
+       so `dotnet publish` (used by the Release workflow and so by Setup.exe) left them out.
+       Copy the English and Spanish voices (the only ones MagniReader offers) and their
+       licence into the publish folder too. -->
+  <Target Name="PublishKokoroVoices" AfterTargets="Publish">
+    <ItemGroup>
+      <_KokoroVoiceFile Include="$(OutputPath)voices\a?_*.npy;$(OutputPath)voices\b?_*.npy;$(OutputPath)voices\e?_*.npy;$(OutputPath)voices\LICENSE" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_KokoroVoiceFile)" DestinationFolder="$(PublishDir)voices" SkipUnchangedFiles="true" />
+    <Error Condition="!Exists('$(PublishDir)voices\af_heart.npy') Or !Exists('$(PublishDir)voices\ef_dora.npy')"
+           Text="Kokoro voices are missing from the publish folder ($(PublishDir)voices)." />
+  </Target>
+
 </Project>
