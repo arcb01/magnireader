@@ -581,43 +581,35 @@ public partial class App : Application
 
     private async Task HoverPreviewAsync(int x, int y, int seq)
     {
-        (Rect rect, string text) found;
+        // The rectangle a click here would read: the paragraph under the cursor, not the
+        // whole document element (PDFs and big documents are one page-sized element).
+        (Rect rect, bool needsOcr) found;
         try
         {
-            found = await _uia.RunAsync(() =>
+            found = await _uia.RunAsync<(Rect, bool)>(() =>
             {
                 // A newer mouse position is already queued: skip this one.
-                if (Volatile.Read(ref _hoverSeq) != seq) return (Rect.Empty, "");
-
-                var element = System.Windows.Automation.AutomationElement.FromPoint(new System.Windows.Point(x, y));
-                if (element == null) return (Rect.Empty, "");
-                var rect = element.Current.BoundingRectangle;
-                if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0) return (Rect.Empty, "");
-
-                string text = "";
-                try
-                {
-                    text = element.Current.Name ?? "";
-                    if (string.IsNullOrWhiteSpace(text) &&
-                        element.TryGetCurrentPattern(System.Windows.Automation.ValuePattern.Pattern, out var pattern))
-                    {
-                        text = ((System.Windows.Automation.ValuePattern)pattern).Current.Value ?? "";
-                    }
-                }
-                catch { }
-                return (rect, text);
+                if (Volatile.Read(ref _hoverSeq) != seq) return (Rect.Empty, false);
+                return _textExtractor!.PreviewRectAtPoint(x, y);
             }, HoverTimeout);
         }
         catch (Exception ex)
         {
             System.Diagnostics.Debug.WriteLine($"[App] Hover error: {ex.Message}");
-            found = (Rect.Empty, "");
+            found = (Rect.Empty, false);
         }
 
         // Back on the UI thread. Drop stale results (mouse moved on, keys released, reading started).
         if (seq != _hoverSeq || _isReading) return;
 
-        if (found.rect.IsEmpty || string.IsNullOrWhiteSpace(found.text))
+        // A click here reads the screen with OCR: outline the paragraph OCR finds.
+        if (found.needsOcr)
+        {
+            found.rect = await HoverOcrRectAsync(x, y, seq);
+            if (seq != _hoverSeq || _isReading) return;
+        }
+
+        if (found.rect.IsEmpty)
         {
             _lastHoverRect = Rect.Empty;
             _hoverHighlight?.HideHighlight();
@@ -627,7 +619,39 @@ public partial class App : Application
         // Skip if we're still on the same element (avoid flicker)
         if (found.rect == _lastHoverRect) return;
         _lastHoverRect = found.rect;
-        _hoverHighlight?.HighlightElement(found.rect, found.text);
+        _hoverHighlight?.HighlightElement(found.rect);
+    }
+
+    // OCR is too slow for every mouse move: wait for the mouse to settle and run one at a time.
+    private const int HoverOcrDelayMs = 250;
+    private bool _hoverOcrBusy; // UI thread only
+
+    /// <summary>The paragraph OCR finds at (x, y), or Rect.Empty (none, OCR missing, or stale).</summary>
+    private async Task<Rect> HoverOcrRectAsync(int x, int y, int seq)
+    {
+        await Task.Delay(HoverOcrDelayMs);
+        while (_hoverOcrBusy)
+        {
+            if (seq != _hoverSeq || _isReading) return Rect.Empty;
+            await Task.Delay(50);
+        }
+        if (seq != _hoverSeq || _isReading) return Rect.Empty;
+
+        _hoverOcrBusy = true;
+        try
+        {
+            var paragraph = await Task.Run(() => OcrReader.ReadParagraphAtAsync(x, y));
+            return paragraph?.BoundingRect ?? Rect.Empty;
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[App] Hover OCR error: {ex.Message}");
+            return Rect.Empty;
+        }
+        finally
+        {
+            _hoverOcrBusy = false;
+        }
     }
 
     private void OnHoverEnd()
