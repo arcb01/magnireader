@@ -75,6 +75,11 @@ public class SpeechEngine : IDisposable
     // was silent with no error. Broken voices are replaced by a local voice.
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> _sapiVoiceWorks =
         new(StringComparer.OrdinalIgnoreCase);
+    // Voice checks in progress, so a reading started while the start-up check is still
+    // running waits for that check instead of starting a second one (each check of an
+    // Online voice is a full round trip to the internet, up to ~5 s).
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, Task<bool>> _sapiVoiceChecks =
+        new(StringComparer.OrdinalIgnoreCase);
 
     // Kokoro (offline neural voices). Used for English/Spanish when selected in
     // Settings; everything else, or any Kokoro failure, falls back to the paths below.
@@ -100,6 +105,20 @@ public class SpeechEngine : IDisposable
     private int _sapiSeekToWord = -1;
     private ManualResetEventSlim? _sapiWake;
     private bool _sapiPaused;
+    // SAPI: true from SpeakAsync until the voice is really heard. An Online voice can take
+    // seconds to fetch its audio, and the highlight clock must not run meanwhile.
+    private volatile bool _sapiAwaitingAudio;
+    // Bumped for every SAPI prompt (start, rewind / forward), so a late "audio started"
+    // signal for an old prompt is ignored.
+    private int _sapiAudioGen;
+    // False once the voice's bookmarks are seen arriving before their words are spoken
+    // (some adapter voices raise them when the audio is MADE, not when it is PLAYED).
+    private volatile bool _sapiBookmarksTrusted = true;
+    private int _sapiPromptFirstWord;
+    private volatile string? _sapiCurrentVoice;
+    private volatile AudioStartDetector? _sapiDetector;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> _sapiVoicesWithEarlyBookmarks =
+        new(StringComparer.OrdinalIgnoreCase);
 
     public event Action<int, int>? WordReached;
     public event Action? SpeechCompleted;
@@ -185,6 +204,7 @@ public class SpeechEngine : IDisposable
 
         // Warm up WinRT path (preferred)
         var winrtVoice = bestVoice?.WinRTVoice ?? TryFindWinRTEquivalent(bestVoice?.DisplayName);
+        bool winrtWarm = false;
         if (winrtVoice != null)
         {
             try
@@ -194,7 +214,7 @@ public class SpeechEngine : IDisposable
                 await _synth.SynthesizeTextToStreamAsync(" ");
                 System.Diagnostics.Debug.WriteLine(
                     $"[Speech] WinRT warm-up complete in {sw.ElapsedMilliseconds}ms (voice: {winrtVoice.DisplayName})");
-                return;
+                winrtWarm = true;
             }
             catch (Exception ex)
             {
@@ -203,52 +223,73 @@ public class SpeechEngine : IDisposable
             }
         }
 
-        // Check that the SAPI voices we are likely to use really produce audio
-        // (UI language and English), so the first reading doesn't wait on a broken voice.
+        // Warm up the SAPI voice that will be used, so the first reading doesn't pay
+        // for loading the voice (and, for an Online voice, its first connection).
+        // That is the UI-language voice when it is a SAPI-only voice; when it isn't
+        // (or it doesn't work, e.g. an Online voice that can't be selected), the
+        // English one, which is what most pages are read with.
         var englishVoice = _voiceManager.GetBestVoiceForLanguage(CultureInfo.GetCultureInfo("en"));
-        if (englishVoice?.SapiVoiceName != null && englishVoice.WinRTVoice == null)
-            _ = EnsureSapiVoiceWorksAsync(englishVoice.SapiVoiceName);
+        var candidates = new List<MagniVoice>();
+        if (!winrtWarm && bestVoice?.SapiVoiceName != null) candidates.Add(bestVoice);
+        if (englishVoice?.SapiVoiceName != null && englishVoice.WinRTVoice == null
+            && TryFindWinRTEquivalent(englishVoice.DisplayName) == null
+            && !candidates.Any(c => string.Equals(c.SapiVoiceName, englishVoice.SapiVoiceName, StringComparison.OrdinalIgnoreCase)))
+            candidates.Add(englishVoice);
 
-        // Fallback: warm up SAPI5 path
-        if (bestVoice?.SapiVoiceName != null)
+        // Check every candidate at the same time (each check of an Online voice is a round trip)
+        var checks = candidates.Select(v => EnsureSapiVoiceWorksAsync(v.SapiVoiceName!)).ToList();
+
+        for (int i = 0; i < candidates.Count; i++)
         {
-            if (!await EnsureSapiVoiceWorksAsync(bestVoice.SapiVoiceName))
-                return;
+            var voice = candidates[i];
+            if (!await checks[i]) continue;
+            if (await WarmUpSapiAsync(voice, sw)) return;
+        }
 
-            try
+        if (!winrtWarm && candidates.Count == 0)
+            System.Diagnostics.Debug.WriteLine("[Speech] No voice to warm up");
+    }
+
+    /// <summary>Creates the persistent SAPI synthesizer for a voice and speaks a space with it.</summary>
+    private async Task<bool> WarmUpSapiAsync(MagniVoice voice, Stopwatch sw)
+    {
+        string name = voice.SapiVoiceName!;
+        try
+        {
+            await Task.Run(() =>
             {
-                await Task.Run(() =>
+                lock (_sapiLock)
                 {
-                    lock (_sapiLock)
+                    // A reading may have created it meanwhile: never replace a synth in use
+                    if (_persistentSapiSynth != null) return;
+                    var synth = new SapiSynth.SpeechSynthesizer();
+                    try
                     {
-                        _persistentSapiSynth?.Dispose();
-                        _persistentSapiSynth = null;
-                        _currentSapiVoiceName = null;
-                        var synth = new SapiSynth.SpeechSynthesizer();
-                        synth.SelectVoice(bestVoice.SapiVoiceName);
+                        synth.SelectVoice(name);
                         synth.SetOutputToDefaultAudioDevice();
-                        _persistentSapiSynth = synth;
-                        _currentSapiVoiceName = bestVoice.SapiVoiceName;
                         synth.Speak(" ");
                     }
-                });
-            }
-            catch (Exception ex)
-            {
-                // The voice is broken (typically an "Online" voice that can't reach
-                // the service). Remember it so readings go straight to a local voice.
-                _sapiVoiceWorks[bestVoice.SapiVoiceName] = false;
-                Infrastructure.CrashLogger.LogError(
-                    $"SAPI warm-up failed for voice '{bestVoice.SapiVoiceName}'; a local voice will be used instead", ex);
-                return;
-            }
-            System.Diagnostics.Debug.WriteLine(
-                $"[Speech] SAPI5 warm-up complete in {sw.ElapsedMilliseconds}ms (voice: {bestVoice.SapiVoiceName})");
+                    catch
+                    {
+                        synth.Dispose();
+                        throw;
+                    }
+                    _persistentSapiSynth = synth;
+                    _currentSapiVoiceName = name;
+                }
+            });
         }
-        else
+        catch (Exception ex)
         {
-            System.Diagnostics.Debug.WriteLine("[Speech] No voice to warm up");
+            // The voice is broken (typically an "Online" voice that can't reach
+            // the service). Remember it so readings go straight to a local voice.
+            _sapiVoiceWorks[name] = false;
+            Infrastructure.CrashLogger.LogError(
+                $"SAPI warm-up failed for voice '{name}'; a local voice will be used instead", ex);
+            return false;
         }
+        LogTrace($"[Speech] SAPI5 warm-up complete in {sw.ElapsedMilliseconds}ms (voice: {name})");
+        return true;
     }
 
     /// <summary>
@@ -281,6 +322,7 @@ public class SpeechEngine : IDisposable
         _charOffset = offset;
         _currentText = text;
         _route = PlaybackRoute.None;
+        _sapiAwaitingAudio = false;
         SetPausedFlag(false);
         _cts = new CancellationTokenSource();
         var token = _cts.Token;
@@ -444,12 +486,16 @@ public class SpeechEngine : IDisposable
     /// <summary>
     /// Returns whether a SAPI voice produces real audio, testing it once per session.
     /// </summary>
-    private async Task<bool> EnsureSapiVoiceWorksAsync(string voiceName)
+    private Task<bool> EnsureSapiVoiceWorksAsync(string voiceName)
     {
-        if (_sapiVoiceWorks.TryGetValue(voiceName, out var known)) return known;
-        var works = await Task.Run(() => ProbeSapiVoice(voiceName));
-        _sapiVoiceWorks[voiceName] = works;
-        return works;
+        if (_sapiVoiceWorks.TryGetValue(voiceName, out var known)) return Task.FromResult(known);
+        return _sapiVoiceChecks.GetOrAdd(voiceName, name => Task.Run(() =>
+        {
+            var works = ProbeSapiVoice(name);
+            _sapiVoiceWorks[name] = works;
+            _sapiVoiceChecks.TryRemove(name, out _);
+            return works;
+        }));
     }
 
     /// <summary>
@@ -931,6 +977,9 @@ public class SpeechEngine : IDisposable
             List<(int start, int length)>? bookmarkWordsRef = null;
             _sapiGotBookmark = false;
             _sapiWordIndex = -1;
+            // A voice whose bookmarks ran ahead once is not trusted again this session
+            _sapiBookmarksTrusted = !_sapiVoicesWithEarlyBookmarks.ContainsKey(bestVoice.SapiVoiceName!);
+            _sapiCurrentVoice = bestVoice.SapiVoiceName;
             void onBookmark(object? s, SapiSynth.BookmarkReachedEventArgs e)
             {
                 try
@@ -941,11 +990,57 @@ public class SpeechEngine : IDisposable
                     if (!int.TryParse(e.Bookmark.AsSpan(1), System.Globalization.NumberStyles.None,
                             System.Globalization.CultureInfo.InvariantCulture, out int i) || i < 0 || i >= words.Count) return;
 
+                    if (!_sapiBookmarksTrusted)
+                    {
+                        _sapiWordIndex = i; // still the best guess for rewind / forward
+                        return;
+                    }
+
+                    if (_sapiAwaitingAudio)
+                    {
+                        var detector = _sapiDetector;
+                        if (detector == null || !detector.IsListening)
+                        {
+                            // The meter can't hear us (yet): the voice's word event is the
+                            // best "audio started" signal there is.
+                            OnSapiAudioStarted(Volatile.Read(ref _sapiAudioGen), sw, text.Length,
+                                bestVoice.SapiVoiceName!, "first bookmark", token);
+                        }
+                        else if (i <= Volatile.Read(ref _sapiPromptFirstWord))
+                        {
+                            return; // the first word is already shown; wait for the sound
+                        }
+                        else
+                        {
+                            // A later word reached while the meter still hears nothing: this
+                            // voice raises bookmarks when it MAKES the audio, not when it
+                            // PLAYS it, so they would race ahead of the voice.
+                            DistrustSapiBookmarks($"word {i + 1} reached before any sound was heard");
+                            return;
+                        }
+                    }
+                    else
+                    {
+                        // Reached far sooner than the word can have been spoken: same thing
+                        var estimate = _sapiEstimate;
+                        if (estimate != null && i < estimate.Count)
+                        {
+                            double expected = estimate[i].offset.TotalMilliseconds;
+                            double now = _clock.Now.TotalMilliseconds;
+                            if (expected > 3000 && now < expected * 0.4)
+                            {
+                                DistrustSapiBookmarks(
+                                    $"word {i + 1} reached at {now:0}ms, estimated at {expected:0}ms");
+                                return;
+                            }
+                        }
+                    }
+
                     if (!_sapiGotBookmark)
                     {
                         _sapiGotBookmark = true;
                         StopWordTimer(); // real timings from now on
-                        LogTrace("[Speech] Word timing: SAPI bookmarks (real)");
+                        LogTrace($"[Speech] Word timing: SAPI bookmarks (real), first is word {i + 1} at {_clock.Now.TotalMilliseconds:0}ms of audio");
                     }
                     _sapiWordIndex = i;
                     var (charPos, charLen) = words[i];
@@ -986,9 +1081,19 @@ public class SpeechEngine : IDisposable
                 _route = PlaybackRoute.Sapi;
                 if (_isPaused) SetSapiPaused(true); // paused before the voice started
 
-                // Start timer-based word tracking
+                // Start timer-based word tracking. Its clock stays stopped until the
+                // voice is really heard (an Online voice first downloads its audio),
+                // so the estimated highlight starts with the voice, not seconds before.
+                Volatile.Write(ref _sapiPromptFirstWord, 0);
+                int gen = Interlocked.Increment(ref _sapiAudioGen);
+                _sapiAwaitingAudio = true;
                 _useMediaPlayerForWordTimer = false;
                 StartWordTimer();
+                LogTrace($"[Speech] SAPI5 waiting for audio ({text.Length} chars, voice ready at {sw.ElapsedMilliseconds}ms)");
+                _sapiDetector = AudioStartDetector.Watch(
+                    (_, detected) => OnSapiAudioStarted(gen, sw, text.Length, bestVoice.SapiVoiceName!,
+                        detected ? "audio meter" : "timeout (no sound detected)", token),
+                    SapiAudioTimeout, requireSilenceFirst: false, () => _isPaused, token);
 
                 // Notify with estimated duration (no WAV stream for SAPI5)
                 double sapiDurationMs = text.Length * 70.0;
@@ -1029,6 +1134,17 @@ public class SpeechEngine : IDisposable
                             var estimate = _sapiEstimate;
                             if (estimate != null && seekTo < estimate.Count)
                                 _clock.Set(estimate[seekTo].offset); // estimated highlight follows
+
+                            // The new prompt has to fetch its audio too: hold the clock
+                            // on the target word until it is heard.
+                            Volatile.Write(ref _sapiPromptFirstWord, seekTo);
+                            int seekGen = Interlocked.Increment(ref _sapiAudioGen);
+                            _sapiAwaitingAudio = true;
+                            _clock.Pause();
+                            _sapiDetector = AudioStartDetector.Watch(
+                                (_, detected) => OnSapiAudioStarted(seekGen, sw, text.Length, bestVoice.SapiVoiceName!,
+                                    detected ? "audio meter (after jump)" : "timeout after jump", token, afterSeek: true),
+                                SapiAudioTimeout, requireSilenceFirst: true, () => _isPaused, token);
                             var (seekPos, seekLen) = bookmarkWords[seekTo];
                             System.Windows.Application.Current?.Dispatcher.BeginInvoke(() =>
                             {
@@ -1069,11 +1185,57 @@ public class SpeechEngine : IDisposable
             finally
             {
                 _sapiWake = null;
+                _sapiAwaitingAudio = false;
+                Interlocked.Increment(ref _sapiAudioGen);
                 synth.SpeakCompleted -= onDone;
                 synth.BookmarkReached -= onBookmark;
                 StopWordTimer();
             }
         }, token);
+    }
+
+    /// <summary>Longest wait for a SAPI voice to be heard before the highlight starts anyway.</summary>
+    private static readonly TimeSpan SapiAudioTimeout = TimeSpan.FromSeconds(15);
+
+    /// <summary>
+    /// The SAPI voice is now heard (or we gave up waiting): start the highlight clock.
+    /// Only the first call for prompt <paramref name="gen"/> counts.
+    /// </summary>
+    private void OnSapiAudioStarted(int gen, Stopwatch sw, int textLength, string voiceName,
+        string how, CancellationToken token, bool afterSeek = false)
+    {
+        if (token.IsCancellationRequested) return;
+        // Claim this prompt's start: a second signal (bookmark + meter) does nothing
+        if (Interlocked.CompareExchange(ref _sapiAudioGen, gen + 1, gen) != gen) return;
+        // gen + 1 is "started"; it is never handed out as a prompt generation because
+        // each new prompt increments again first.
+        _sapiAwaitingAudio = false;
+        if (!_isPaused) _clock.Resume();
+
+        long ms = sw.ElapsedMilliseconds;
+        LogTrace($"[Speech] SAPI5 audio started at {ms}ms ({how})");
+        if (!afterSeek && ms > 3000)
+            Infrastructure.CrashLogger.LogWarning(
+                $"Voice '{voiceName}' took {ms / 1000.0:0.0} s to start speaking ({textLength} chars, {how})");
+    }
+
+    /// <summary>
+    /// The voice's bookmarks don't follow the audio: go back to the estimated highlight,
+    /// which runs on the clock started when the voice was first heard.
+    /// </summary>
+    private void DistrustSapiBookmarks(string why)
+    {
+        if (!_sapiBookmarksTrusted) return;
+        _sapiBookmarksTrusted = false;
+        var voice = _sapiCurrentVoice;
+        if (voice != null) _sapiVoicesWithEarlyBookmarks[voice] = true;
+        Infrastructure.CrashLogger.LogWarning(
+            $"SAPI voice '{voice}' word events run ahead of the audio ({why}); using estimated word timing instead");
+        if (_sapiGotBookmark)
+        {
+            _sapiGotBookmark = false;
+            StartWordTimer(keepClock: true);
+        }
     }
 
     // ─── Pause / rewind / forward ───────────────────────────────
@@ -1111,7 +1273,8 @@ public class SpeechEngine : IDisposable
                 break;
         }
 
-        if (paused) _clock.Pause(); else _clock.Resume();
+        if (paused) _clock.Pause();
+        else if (!_sapiAwaitingAudio) _clock.Resume(); // else resumed when the voice is heard
         if (paused) Ducker.ScheduleRestore(); else Ducker.Duck();
         SetPausedFlag(paused);
     }
@@ -1290,6 +1453,8 @@ public class SpeechEngine : IDisposable
         SetSapiPaused(false);
 
         _route = PlaybackRoute.None;
+        _sapiAwaitingAudio = false;
+        Interlocked.Increment(ref _sapiAudioGen);
         _kokoroControl = null;
         if (!_restarting) CancelRestart();
         SetPausedFlag(false);
@@ -1636,11 +1801,12 @@ public class SpeechEngine : IDisposable
     /// Otherwise a clock that stops while paused and jumps on rewind / forward is used.
     /// The word is looked up from the position every tick, so it can move backwards.
     /// </summary>
-    private void StartWordTimer()
+    private void StartWordTimer(bool keepClock = false)
     {
         StopWordTimer();
         var timings = _wordTimings;
-        _clock.Restart(TimeSpan.Zero, paused: _isPaused);
+        if (!keepClock)
+            _clock.Restart(TimeSpan.Zero, paused: _isPaused || _sapiAwaitingAudio);
         if (timings.Count == 0) return;
 
         bool useMediaPlayer = _useMediaPlayerForWordTimer;
