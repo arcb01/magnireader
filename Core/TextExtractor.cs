@@ -392,6 +392,70 @@ public class TextExtractor
     }
 
     /// <summary>
+    /// The screen rectangle that a click at (x, y) would read, for the hover box. A cheap
+    /// version of <see cref="ExtractFirstElementAtPoint"/>: the paragraph under the cursor
+    /// in documents and web pages, otherwise the element's own rectangle. NeedsOcr is true
+    /// when a click would read the screen with OCR instead (nothing readable here, or only
+    /// a page-sized element such as a PDF page), so the caller can find the paragraph that
+    /// way rather than outline the whole document. Run on the UI Automation thread.
+    /// </summary>
+    public (Rect Rect, bool NeedsOcr) PreviewRectAtPoint(int x, int y)
+    {
+        try
+        {
+            var point = new System.Windows.Point(x, y);
+            var element = AutomationElement.FromPoint(point);
+            if (element == null) return (Rect.Empty, true);
+
+            // Same paragraph as a click (STEP 0 there)
+            var doc = FindDocumentAncestor(element);
+            if (doc != null && doc.TryGetCurrentPattern(TextPattern.Pattern, out var obj))
+            {
+                try
+                {
+                    var range = ((TextPattern)obj).RangeFromPoint(point);
+                    range.ExpandToEnclosingUnit(TextUnit.Paragraph);
+                    var para = MakeParagraphElement(range, doc);
+                    if (para != null)
+                    {
+                        // A click reads it with OCR when the range isn't under the cursor, and
+                        // a "paragraph" as big as the whole document isn't worth outlining.
+                        if (!RangeContainsPoint(range, point) || para.BoundingRect.IsEmpty ||
+                            CoversMostOf(para.BoundingRect, GetSafeRect(doc)))
+                            return (Rect.Empty, true);
+                        return (para.BoundingRect, false);
+                    }
+                }
+                catch { }
+            }
+
+            // The element's own label or value, but never a page-sized box: a click
+            // there reads with OCR too (see TryExtractFromElement's "uncertain").
+            var rect = GetSafeRect(element);
+            if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0 || IsLargeContainer(rect))
+                return (Rect.Empty, true);
+
+            string? text = element.Current.Name;
+            if (string.IsNullOrWhiteSpace(text) &&
+                element.TryGetCurrentPattern(ValuePattern.Pattern, out var value))
+                text = ((ValuePattern)value).Current.Value;
+            text = CleanText(text);
+            if (string.IsNullOrWhiteSpace(text) || !IsReadableText(text)) return (Rect.Empty, true);
+            return (rect, false);
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[TextExtractor] Hover preview failed: {ex.Message}");
+            return (Rect.Empty, false);
+        }
+    }
+
+    /// <summary>True when a page-sized <paramref name="rect"/> fills most of <paramref name="container"/>.</summary>
+    private static bool CoversMostOf(Rect rect, Rect container) =>
+        IsLargeContainer(rect) && !container.IsEmpty &&
+        rect.Width >= container.Width * 0.9 && rect.Height >= container.Height * 0.8;
+
+    /// <summary>
     /// The element itself or its nearest ancestor that is a document or rich edit
     /// box with TextPattern (browsers, Word, Notepad, WordPad…).
     /// </summary>
