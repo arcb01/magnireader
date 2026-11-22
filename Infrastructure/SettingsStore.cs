@@ -144,10 +144,10 @@ public class AppSettings
     public string GpuEngine { get; set; } = "omnivoice";
 
     /// <summary>Reference clip the GPU model clones for English text.</summary>
-    public string GpuVoiceEnglish { get; set; } = "en_us_f1";
+    public string GpuVoiceEnglish { get; set; } = "en_us_m1";
 
     /// <summary>Reference clip the GPU model clones for Spanish text (Castilian by default).</summary>
-    public string GpuVoiceSpanish { get; set; } = "es_castilian_m1";
+    public string GpuVoiceSpanish { get; set; } = "es_castilian_m2";
 
     // ─── Shortcuts ───────────────────────────────────────────────
     // Text form: modifiers in the order Ctrl, Alt, Shift, Win, then one key (A–Z, 0–9, F1–F12).

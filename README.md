@@ -127,7 +127,7 @@ Even more natural voices for English and **Castilian Spanish**, generated on an 
 
 - **Needs** an NVIDIA GPU with at least 6 GB of memory and driver 570 or newer. Settings checks the PC and shows a warning (and disables the option) when there is no such GPU.
 - **Install** from **Settings → Speech → Voice engine → GPU voices**: pick a model and click **⬇ Install**. MagniReader downloads Python, PyTorch (CUDA) and the model (about 11–12 GB on disk) into `%LOCALAPPDATA%\MagniReader\gpu-tts` and tests it on the GPU. Nothing is installed until you ask.
-- **Voices**: the models copy the voice and accent of a short reference clip. MagniReader ships a public-domain Castilian Spanish clip and an American English one (see [GpuTts/voices](GpuTts/voices/README.md)). Add your own with **📁 Add your own voice clip…**: a 5–15 s `.wav` plus a `.txt` with its exact words.
+- **Voices**: the models copy the voice and accent of a short reference clip. MagniReader ships neutral male voices for Castilian Spanish and American English (the defaults), plus public-domain recordings of a Castilian male and an American female reader (see [GpuTts/voices](GpuTts/voices/README.md)). Add your own with **📁 Add your own voice clip…**: a 5–15 s `.wav` plus a `.txt` with its exact words.
 - While the model is loading (10–40 s after start-up), or if it fails, Kokoro (if installed) or a Windows voice reads instead. The model stays in GPU memory while MagniReader runs and is unloaded when you pick another engine or exit.
 
 | Model | Time to first audio | Real-time factor | GPU memory | License |

@@ -54,8 +54,8 @@ public sealed class GpuVoiceSpeaker : IDisposable
     };
 
     public const string DefaultEngine = "omnivoice";
-    public const string DefaultEnglishVoice = "en_us_f1";
-    public const string DefaultSpanishVoice = "es_castilian_m1";
+    public const string DefaultEnglishVoice = "en_us_m1";
+    public const string DefaultSpanishVoice = "es_castilian_m2";
 
     /// <summary>uv (Python package manager) release used to set up the environments.</summary>
     private const string UvVersion = "0.13.9";

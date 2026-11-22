@@ -18,7 +18,7 @@ TEXTS = {
            "y la sala de lectura del segundo piso permanece en silencio todo el día. Si necesitas ayuda para encontrar algo, "
            "pregunta en el mostrador y un bibliotecario te indicará dónde está."),
 }
-VOICE = {"en": "en_us_f1", "es": "es_castilian_m1"}
+VOICE = {"en": os.environ.get("BENCH_VOICE_EN", "en_us_m1"), "es": os.environ.get("BENCH_VOICE_ES", "es_castilian_m2")}
 
 
 def chunks(text, first_max=120, mx=260):
