@@ -57,6 +57,17 @@ public class LanguageDetectorTests
         Assert.Equal("es", Lang("Una nota importante sobre el proyecto"));
     }
 
+    [Theory]
+    [InlineData("Max payne 3 is the goat of dans rockstar writing imo")]
+    [InlineData("Max Payne 3 is the GOAT of Dan's Rockstar writing imo")]
+    public void Casual_english_with_names_and_slang(string text)
+    {
+        // Reported: the old detector read this in Spanish
+        Assert.Equal("en", Lang(text));
+        Assert.Equal("en", Lang(text, hint: "es"));
+        Assert.True(_detector.Detect(text, hint: "es").IsConfident);
+    }
+
     [Fact]
     public void English_short_text_is_not_taken_for_dutch_or_danish()
     {
