@@ -129,7 +129,7 @@ public class AppSettings
 
     // ─── Kokoro (offline neural voices) ──────────────────────────
 
-    /// <summary>Speech engine: "Windows" (SAPI/OneCore voices) or "Kokoro".</summary>
+    /// <summary>Speech engine: "Windows" (SAPI/OneCore voices), "Kokoro", or "Gpu" (GPU voices, NVIDIA only).</summary>
     public string SpeechEngine { get; set; } = "Windows";
 
     /// <summary>Kokoro voice used for English text (e.g. "af_heart").</summary>
@@ -137,6 +137,17 @@ public class AppSettings
 
     /// <summary>Kokoro voice used for Spanish text (e.g. "ef_dora").</summary>
     public string KokoroVoiceSpanish { get; set; } = "ef_dora";
+
+    // ─── GPU voices (optional, NVIDIA GPU) ───────────────────────
+
+    /// <summary>GPU model used when <see cref="SpeechEngine"/> is "Gpu" (see GpuVoiceSpeaker.Engines).</summary>
+    public string GpuEngine { get; set; } = "omnivoice";
+
+    /// <summary>Reference clip the GPU model clones for English text.</summary>
+    public string GpuVoiceEnglish { get; set; } = "en_us_f1";
+
+    /// <summary>Reference clip the GPU model clones for Spanish text (Castilian by default).</summary>
+    public string GpuVoiceSpanish { get; set; } = "es_castilian_m1";
 
     // ─── Shortcuts ───────────────────────────────────────────────
     // Text form: modifiers in the order Ctrl, Alt, Shift, Win, then one key (A–Z, 0–9, F1–F12).

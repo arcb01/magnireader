@@ -90,7 +90,7 @@ The read, read-selection and describe shortcuts can be changed in **Settings →
 | ▶ Read | Click it, then click any text to read it. `Esc` cancels. |
 | ■ Stop | Stops reading. |
 | − Speed + | Reading speed, -10 to +10. Takes effect right away, also mid-reading. |
-| Windows / Kokoro | Switches the voice engine. Kokoro needs its model downloaded first. |
+| Windows / Kokoro / GPU | Switches the voice engine. Kokoro needs its model downloaded first; GPU appears once a GPU voice is installed. |
 | 📷 | Describes a screen area with AI. |
 | ⚙ | Opens Settings. |
 | — | Hides the bar to the tray. Double-click the tray icon to bring it back. |
@@ -103,7 +103,7 @@ Drag the bar by its label. It remembers where you put it and whether it was hidd
 While a text is being read, a small strip sits on top of the highlighted box: **⏪ 10**, **⏸ / ▶**, **10 ⏩**, a speed button (**1x**) and **■**. Clicking it doesn't interrupt the reading or take focus from your app. Very short texts, like a button or a heading, don't get the strip.
 
 - Back stops at the start of the current paragraph. Forward past its end moves on to the next one.
-- Kokoro and standard Windows voices jump exactly 10 seconds. SAPI voices (such as Natural voices through NaturalVoiceSAPIAdapter) restart at the word estimated to be 10 seconds away.
+- Kokoro, GPU voices and standard Windows voices jump exactly 10 seconds. SAPI voices (such as Natural voices through NaturalVoiceSAPIAdapter) restart at the word estimated to be 10 seconds away.
 - The speed button steps through 1x → 1.25x → 1.5x → 2x → 0.75x. The new speed applies right away: the voice picks up again from the word it was saying. It is the same setting as Settings and the control bar's − Speed +, so it is remembered. Each voice type maps the speed setting a little differently, so the button shows the nearest speed it can do (for example 1.2x instead of 1.25x on standard Windows voices).
 - Background audio comes back up while paused.
 
@@ -120,6 +120,22 @@ Offline neural voices for English and Spanish that sound natural and need no acc
 3. Choose an English and a Spanish voice and press ▶ to preview them.
 
 Other languages (Catalan, French, …) are read with Windows voices, and if Kokoro ever fails a Windows voice takes over.
+
+### GPU voices (optional, NVIDIA only)
+
+Even more natural voices for English and **Castilian Spanish**, generated on an NVIDIA graphics card. Kokoro stays the default; this is an extra mode for PCs with a suitable GPU.
+
+- **Needs** an NVIDIA GPU with at least 6 GB of memory and driver 570 or newer. Settings checks the PC and shows a warning (and disables the option) when there is no such GPU.
+- **Install** from **Settings → Speech → Voice engine → GPU voices**: pick a model and click **⬇ Install**. MagniReader downloads Python, PyTorch (CUDA) and the model (about 11–12 GB on disk) into `%LOCALAPPDATA%\MagniReader\gpu-tts` and tests it on the GPU. Nothing is installed until you ask.
+- **Voices**: the models copy the voice and accent of a short reference clip. MagniReader ships a public-domain Castilian Spanish clip and an American English one (see [GpuTts/voices](GpuTts/voices/README.md)). Add your own with **📁 Add your own voice clip…**: a 5–15 s `.wav` plus a `.txt` with its exact words.
+- While the model is loading (10–40 s after start-up), or if it fails, Kokoro (if installed) or a Windows voice reads instead. The model stays in GPU memory while MagniReader runs and is unloaded when you pick another engine or exit.
+
+| Model | Time to first audio | Real-time factor | GPU memory | License |
+|---|---|---|---|---|
+| **OmniVoice** (fastest) | 1.0 s | 0.18–0.22 | ≈ 6 GB | CC BY-NC 4.0 (personal use) |
+| Qwen3-TTS 0.6B Base (with CUDA graphs) | 1.1–1.4 s | 0.37 | ≈ 5 GB | Apache 2.0 |
+
+Measured on an RTX 3090 (see [GpuTts/BENCHMARKS.md](GpuTts/BENCHMARKS.md)). Real-time factor is generation time ÷ audio length: below 1 is faster than real time.
 
 ### Windows voices
 
@@ -151,7 +167,7 @@ Screenshots are sent only to the provider you choose, and only when you take one
 
 | Tab | What's there |
 |---|---|
-| **Speech** | Voice engine, Kokoro voices and model download, voice priority per language (Windows engine), rate, volume, lowering other sounds |
+| **Speech** | Voice engine, Kokoro voices and model download, GPU voices (model, voices, install, GPU check), voice priority per language (Windows engine), rate, volume, lowering other sounds |
 | **Display** | How much to dim the rest of the screen, highlight theme |
 | **Shortcuts** | Record the read, read-selection and describe-area shortcuts, or reset them |
 | **Vision** | AI provider, API key, key test |
@@ -237,6 +253,7 @@ magnireader/
 │   ├── VoiceEnabler.cs           # OneCore voice registration (admin)
 │   ├── SpeechEngine.cs           # Speech playback, pause and seek
 │   ├── KokoroSpeaker.cs          # Offline Kokoro neural voices
+│   ├── GpuVoiceSpeaker.cs        # Optional GPU voices: GPU check, install, Python server
 │   ├── WordLocator.cs            # Spoken word → screen rectangle
 │   ├── AudioDucker.cs            # Lowers other apps' audio while reading
 │   └── VisionAnalyzer.cs         # Gemini / OpenAI vision
@@ -257,6 +274,10 @@ magnireader/
 │   └── CrashLogger.cs            # Crash reports + diagnostics log
 ├── Helpers/
 │   └── NativeInterop.cs          # Win32 P/Invoke
+├── GpuTts/
+│   ├── magni_tts_server.py       # Local server that runs a GPU voice model (PyTorch)
+│   ├── requirements/             # Pinned Python packages per model
+│   └── voices/                   # Reference clips (Castilian Spanish, English)
 ├── assets/                      # Logo (SVG + PNG)
 └── scripts/                      # Standalone admin voice tools
 ```

@@ -91,6 +91,14 @@ public class SpeechEngine : IDisposable
     private string _kokoroVoiceEnglish = KokoroSpeaker.DefaultEnglishVoice;
     private string _kokoroVoiceSpanish = KokoroSpeaker.DefaultSpanishVoice;
 
+    // GPU voices (optional, NVIDIA only). Same languages as Kokoro; if the GPU voice is
+    // not ready or fails, Kokoro (when installed) and then a Windows voice read instead.
+    private readonly GpuVoiceSpeaker _gpu = GpuVoiceSpeaker.Shared;
+    private bool _gpuEnabled;
+    private string _gpuEngine = GpuVoiceSpeaker.DefaultEngine;
+    private string _gpuVoiceEnglish = GpuVoiceSpeaker.DefaultEnglishVoice;
+    private string _gpuVoiceSpanish = GpuVoiceSpeaker.DefaultSpanishVoice;
+
     // ─── Pause / seek (reading controls) ────────────────────────
     private enum PlaybackRoute { None, Kokoro, MediaPlayer, NAudio, Sapi }
     private volatile PlaybackRoute _route;
@@ -335,7 +343,9 @@ public class SpeechEngine : IDisposable
         {
             // 0. Kokoro, if selected and it has a voice for this language
             // (A restart after a speed change keeps the language picked for the whole text.)
-            if (_kokoroEnabled && offset == 0) _speakCulture = culture = RecheckLanguageForKokoro(text, culture);
+            if ((_kokoroEnabled || _gpuEnabled) && offset == 0) _speakCulture = culture = RecheckLanguageForKokoro(text, culture);
+            if (await TrySpeakViaGpuAsync(text, culture, token)) return;
+            if (token.IsCancellationRequested) return;
             if (await TrySpeakViaKokoroAsync(text, culture, token)) return;
             if (token.IsCancellationRequested) return;
 
@@ -607,7 +617,21 @@ public class SpeechEngine : IDisposable
     /// </summary>
     public void ConfigureKokoro(Infrastructure.AppSettings settings)
     {
-        _kokoroEnabled = string.Equals(settings.SpeechEngine, "Kokoro", StringComparison.OrdinalIgnoreCase);
+        _gpuEnabled = string.Equals(settings.SpeechEngine, "Gpu", StringComparison.OrdinalIgnoreCase)
+                      && GpuVoiceSpeaker.IsInstalled(settings.GpuEngine);
+        _gpuEngine = settings.GpuEngine;
+        _gpuVoiceEnglish = GpuVoiceSpeaker.HasVoice(settings.GpuVoiceEnglish)
+            ? settings.GpuVoiceEnglish : GpuVoiceSpeaker.DefaultEnglishVoice;
+        _gpuVoiceSpanish = GpuVoiceSpeaker.HasVoice(settings.GpuVoiceSpanish)
+            ? settings.GpuVoiceSpanish : GpuVoiceSpeaker.DefaultSpanishVoice;
+        if (_gpuEnabled)
+            _ = _gpu.EnsureStartedAsync(_gpuEngine);
+        else
+            _ = _gpu.StopAsync(); // frees the GPU memory when another engine is picked
+
+        // Kokoro is also the backup for the GPU voices (while they load, or if they fail)
+        _kokoroEnabled = string.Equals(settings.SpeechEngine, "Kokoro", StringComparison.OrdinalIgnoreCase)
+                         || (_gpuEnabled && KokoroSpeaker.IsModelDownloaded);
         _kokoroVoiceEnglish = KokoroSpeaker.HasVoice(settings.KokoroVoiceEnglish)
             ? settings.KokoroVoiceEnglish : KokoroSpeaker.DefaultEnglishVoice;
         _kokoroVoiceSpanish = KokoroSpeaker.HasVoice(settings.KokoroVoiceSpanish)
@@ -637,6 +661,88 @@ public class SpeechEngine : IDisposable
         LogTrace($"[Speech] Language re-check: '{lang}' → '{recheck}'");
         try { return CultureInfo.GetCultureInfo(recheck); }
         catch { return culture; }
+    }
+
+    /// <summary>
+    /// Speaks with the GPU voice. Returns false (nothing was heard) when the GPU voice is
+    /// off, still loading, has no voice for the language or failed before any audio, so
+    /// the caller tries Kokoro and then a Windows voice.
+    /// </summary>
+    private async Task<bool> TrySpeakViaGpuAsync(string text, CultureInfo culture, CancellationToken token)
+    {
+        if (!_gpuEnabled) return false;
+        string lang = culture.TwoLetterISOLanguageName;
+        string? voiceId = lang switch { "en" => _gpuVoiceEnglish, "es" => _gpuVoiceSpanish, _ => null };
+        if (voiceId == null) return false;
+
+        if (!_gpu.IsReady(_gpuEngine))
+        {
+            // Loading (right after startup it takes a while): use the backup voice meanwhile
+            var start = _gpu.EnsureStartedAsync(_gpuEngine);
+            var winner = await Task.WhenAny(start, Task.Delay(1500, token));
+            if (token.IsCancellationRequested) return true;
+            if (winner != start || !start.Result)
+            {
+                LogTrace($"[Speech] GPU voice not ready ({_gpu.LastError ?? "loading"}); using the backup voice");
+                return false;
+            }
+        }
+
+        LogTrace($"[Speech] Route: GPU {_gpuEngine} → {voiceId} (lang={lang}, speed={KokoroSpeed:F2})");
+        var control = new KokoroPlaybackControl();
+        if (_isPaused) control.SetPaused(true);
+        _kokoroControl = control;
+        _route = PlaybackRoute.Kokoro;
+        _isSpeaking = true;
+        SpeechStarted?.Invoke();
+        bool audioStarted = false;
+
+        bool spoke;
+        int offset = _charOffset;
+        try
+        {
+            spoke = await _gpu.SpeakAsync(text, lang, voiceId, KokoroSpeed,
+                onWord: (pos, len) => System.Windows.Application.Current?.Dispatcher.BeginInvoke(() =>
+                {
+                    if (_isSpeaking && !token.IsCancellationRequested)
+                        RaiseWordReached(offset + pos, len);
+                }),
+                onAudioStarted: estMs =>
+                {
+                    audioStarted = true;
+                    System.Windows.Application.Current?.Dispatcher.BeginInvoke(() => PlaybackStarted?.Invoke(estMs));
+                },
+                token, control);
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+            return true;
+        }
+        catch (Exception ex) when (!audioStarted && !token.IsCancellationRequested)
+        {
+            Infrastructure.CrashLogger.LogError("GPU voice failed before speaking; using the backup voice", ex);
+            _isSpeaking = false;
+            _route = PlaybackRoute.None;
+            return false;
+        }
+        catch (Exception ex)
+        {
+            Infrastructure.CrashLogger.LogError("GPU voice playback failed", ex);
+            spoke = true;
+        }
+
+        if (!spoke && !token.IsCancellationRequested)
+        {
+            _isSpeaking = false;
+            _route = PlaybackRoute.None;
+            return false;
+        }
+        if (!token.IsCancellationRequested && _isSpeaking)
+        {
+            _isSpeaking = false;
+            SpeechCompleted?.Invoke();
+        }
+        return true;
     }
 
     /// <summary>Kokoro speed for the settings rate -10..10 (1.0 = normal).</summary>
@@ -1543,7 +1649,7 @@ public class SpeechEngine : IDisposable
     {
         PlaybackRoute.Kokoro => RateScale.Kokoro,
         PlaybackRoute.Sapi => RateScale.Sapi,
-        PlaybackRoute.None => _kokoroEnabled ? RateScale.Kokoro : RateScale.WinRT,
+        PlaybackRoute.None => _kokoroEnabled || _gpuEnabled ? RateScale.Kokoro : RateScale.WinRT,
         _ => RateScale.WinRT,
     };
 
@@ -1859,6 +1965,7 @@ public class SpeechEngine : IDisposable
     {
         Cancel();
         DisposeMediaPlayer();
+        try { _gpu.Dispose(); } catch { }
 
         try { _waveOut?.Dispose(); } catch { }
         _waveOut = null;

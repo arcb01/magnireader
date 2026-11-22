@@ -37,6 +37,9 @@
 
   <ItemGroup>
     <Content Include="app.ico" CopyToOutputDirectory="PreserveNewest" />
+    <!-- GPU voices: Python server, pinned requirements and the reference voice clips.
+         Python, PyTorch and the models themselves are installed on demand from Settings. -->
+    <Content Include="GpuTts\**\*" Exclude="GpuTts\**\__pycache__\**;GpuTts\**\*.md;GpuTts\bench\**" CopyToOutputDirectory="PreserveNewest" />
     <!-- App logo shown inside the UI (Settings header, About, control bar) -->
     <Resource Include="assets\magnireader.png" />
   </ItemGroup>

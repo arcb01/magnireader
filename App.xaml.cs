@@ -438,7 +438,9 @@ public partial class App : Application
         if (_controlBar == null || _settingsStore == null) return;
         var s = _settingsStore.Settings;
         _controlBar.SetRate(s.SpeechRate);
-        _controlBar.SetEngine(string.Equals(s.SpeechEngine, "Kokoro", StringComparison.OrdinalIgnoreCase));
+        _controlBar.SetEngine(
+            string.Equals(s.SpeechEngine, "Kokoro", StringComparison.OrdinalIgnoreCase) ? "Kokoro" :
+            string.Equals(s.SpeechEngine, "Gpu", StringComparison.OrdinalIgnoreCase) ? "GPU" : "Windows");
         _controlBar.SetReading(_isReading);
     }
 
@@ -468,23 +470,36 @@ public partial class App : Application
         }
     }
 
+    /// <summary>
+    /// Control bar engine button: Windows → Kokoro → GPU voices (when installed) → Windows.
+    /// </summary>
     private void ToggleSpeechEngine()
     {
         var s = _settingsStore!.Settings;
-        bool toKokoro = !string.Equals(s.SpeechEngine, "Kokoro", StringComparison.OrdinalIgnoreCase);
+        var order = new List<string> { "Windows", "Kokoro" };
+        if (GpuVoiceSpeaker.IsInstalled(s.GpuEngine)) order.Add("Gpu");
+        int i = order.FindIndex(e => string.Equals(e, s.SpeechEngine, StringComparison.OrdinalIgnoreCase));
+        string next = order[(i + 1) % order.Count];
 
-        if (toKokoro && !KokoroSpeaker.IsModelDownloaded)
+        if (next == "Kokoro" && !KokoroSpeaker.IsModelDownloaded)
         {
-            // The model has to be downloaded first; that lives in Settings.
-            _trayIcon?.ShowBalloonTip(
-                "Kokoro voices not downloaded",
-                "Pick Kokoro in Settings → Speech and download its model first.",
-                BalloonIcon.Info);
-            OpenSettings();
-            return;
+            if (order.Contains("Gpu"))
+            {
+                next = "Gpu";
+            }
+            else
+            {
+                // The model has to be downloaded first; that lives in Settings.
+                _trayIcon?.ShowBalloonTip(
+                    "Kokoro voices not downloaded",
+                    "Pick Kokoro in Settings → Speech and download its model first.",
+                    BalloonIcon.Info);
+                OpenSettings();
+                return;
+            }
         }
 
-        s.SpeechEngine = toKokoro ? "Kokoro" : "Windows";
+        s.SpeechEngine = next;
         _speechEngine?.ConfigureKokoro(s);
         _settingsStore.Save();
         RefreshControlBar();
