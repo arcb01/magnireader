@@ -68,7 +68,60 @@
                         <ComboBox x:Name="EngineCombo" SelectionChanged="EngineCombo_SelectionChanged">
                             <ComboBoxItem Content="Windows voices (SAPI / OneCore)" IsSelected="True" />
                             <ComboBoxItem Content="Kokoro (offline neural, English &amp; Spanish)" />
+                            <ComboBoxItem x:Name="GpuEngineItem" Content="GPU voices (highest quality, needs an NVIDIA GPU)" />
                         </ComboBox>
+
+                        <!-- GPU voices (only when GPU voices are selected) -->
+                        <Border x:Name="GpuPanel" Style="{StaticResource Card}" Visibility="Collapsed">
+                            <StackPanel>
+                                <Border x:Name="GpuWarningBox" Background="#3A2A1A" BorderBrush="#F9A825" BorderThickness="1"
+                                        CornerRadius="6" Padding="10,8" Margin="0,0,0,10">
+                                    <TextBlock x:Name="GpuWarningText" TextWrapping="Wrap" FontSize="12" Foreground="#FFE082"
+                                               Text="⚠ GPU voices need an NVIDIA graphics card (6 GB or more) with a recent driver. Checking this PC…" />
+                                </Border>
+
+                                <TextBlock Text="Model" />
+                                <ComboBox x:Name="GpuModelCombo" DisplayMemberPath="DisplayName"
+                                          SelectionChanged="GpuModelCombo_SelectionChanged" />
+                                <TextBlock x:Name="GpuModelInfoText" FontSize="11" Foreground="#A6ADC8"
+                                           TextWrapping="Wrap" Margin="0,0,0,8" />
+
+                                <TextBlock Text="English voice" />
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <ComboBox x:Name="GpuEnglishCombo" DisplayMemberPath="DisplayName" />
+                                    <Button x:Name="GpuPreviewEnBtn" Grid.Column="1" Content="▶" Style="{StaticResource IconButton}"
+                                            Margin="6,0,0,8" ToolTip="Preview" Click="PreviewGpuEnglish_Click" />
+                                </Grid>
+
+                                <TextBlock Text="Spanish voice" />
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <ComboBox x:Name="GpuSpanishCombo" DisplayMemberPath="DisplayName" />
+                                    <Button x:Name="GpuPreviewEsBtn" Grid.Column="1" Content="▶" Style="{StaticResource IconButton}"
+                                            Margin="6,0,0,8" ToolTip="Preview" Click="PreviewGpuSpanish_Click" />
+                                </Grid>
+
+                                <TextBlock x:Name="GpuStatusText" FontSize="11" Foreground="#A6ADC8"
+                                           TextWrapping="Wrap" Margin="0,0,0,6" />
+                                <ProgressBar x:Name="GpuProgress" IsIndeterminate="True" Height="4"
+                                             Margin="0,0,0,8" Visibility="Collapsed" />
+                                <Button x:Name="GpuInstallBtn" Content="⬇ Install this model"
+                                        Style="{StaticResource LinkButton}" Height="32"
+                                        Visibility="Collapsed" Click="GpuInstall_Click" />
+                                <Button Content="📁 Add your own voice clip…" Style="{StaticResource LinkButton}"
+                                        Height="28" Margin="0,6,0,0" Click="GpuOpenVoicesFolder_Click"
+                                        ToolTip="Put a 5–15 s .wav of one speaker there, with a .txt file of the same name holding exactly what is said. Name it es_… for Spanish or en_… for English." />
+                                <TextBlock FontSize="11" Foreground="#6C7086" TextWrapping="Wrap" Margin="0,8,0,0"
+                                           Text="The voice copies the accent of its reference clip: the Spanish one is Castilian (Spain). While a GPU voice is loading, or if it fails, Kokoro (if installed) or a Windows voice reads instead. Other languages use the Windows voices." />
+                            </StackPanel>
+                        </Border>
 
                         <!-- Kokoro voices (only when Kokoro is selected) -->
                         <Border x:Name="KokoroPanel" Style="{StaticResource Card}" Visibility="Collapsed">
@@ -120,6 +173,11 @@
                         </StackPanel>
 
                         <TextBlock Text="SPEECH" Style="{StaticResource SectionHeader}" />
+                        <TextBlock Text="Reading language" />
+                        <ComboBox x:Name="ReadingLanguageCombo" Margin="0,4,0,2" />
+                        <TextBlock Style="{StaticResource HintText}"
+                                   Text="Auto-detect picks the language of each text. Choose a language to always read in it (also on the language button above the reading box)." />
+
                         <TextBlock>
                             <Run Text="Speech rate: " />
                             <Run x:Name="RateValueText" Text="1" Foreground="#FFD700" />

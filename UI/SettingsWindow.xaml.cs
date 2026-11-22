@@ -56,6 +56,9 @@ public partial class SettingsWindow : Window
     private void LoadSettings()
     {
         var s = _settingsStore.Settings;
+        ReadingLanguageCombo.ItemsSource = Core.LanguageDetector.ManualChoices.Select(c => c.Name).ToList();
+        int li = Core.LanguageDetector.ManualChoices.ToList().FindIndex(c => c.Code == s.ReadingLanguage);
+        ReadingLanguageCombo.SelectedIndex = li >= 0 ? li : 0;
         RateSlider.Value = s.SpeechRate;
         VolumeSlider.Value = s.Volume;
         DuckCheckBox.IsChecked = s.DuckOtherAudio;
@@ -322,6 +325,9 @@ public partial class SettingsWindow : Window
     {
         StopRecording();
         var s = _settingsStore.Settings;
+        int li = ReadingLanguageCombo.SelectedIndex;
+        if (li >= 0 && li < Core.LanguageDetector.ManualChoices.Count)
+            s.ReadingLanguage = Core.LanguageDetector.ManualChoices[li].Code;
         s.SpeechRate = (int)RateSlider.Value;
         s.Volume = (int)VolumeSlider.Value;
         s.DuckOtherAudio = DuckCheckBox.IsChecked == true;
@@ -332,9 +338,12 @@ public partial class SettingsWindow : Window
         s.VoicePriorities = new Dictionary<string, List<string>>(_workingPriorities);
 
         // Voice engine
-        s.SpeechEngine = EngineCombo.SelectedIndex == 1 ? "Kokoro" : "Windows";
+        s.SpeechEngine = EngineCombo.SelectedIndex switch { 1 => "Kokoro", 2 => "Gpu", _ => "Windows" };
         if (KokoroEnglishCombo.SelectedItem is KokoroVoiceInfo en) s.KokoroVoiceEnglish = en.Id;
         if (KokoroSpanishCombo.SelectedItem is KokoroVoiceInfo es) s.KokoroVoiceSpanish = es.Id;
+        if (GpuModelCombo.SelectedItem is GpuEngineInfo ge) s.GpuEngine = ge.Id;
+        if (GpuEnglishCombo.SelectedItem is GpuVoiceInfo gen) s.GpuVoiceEnglish = gen.Id;
+        if (GpuSpanishCombo.SelectedItem is GpuVoiceInfo ges) s.GpuVoiceSpanish = ges.Id;
 
         // Vision settings
         s.VisionProvider = VisionProviderCombo.SelectedIndex == 1 ? "OpenAI" : "Gemini";
@@ -372,11 +381,18 @@ public partial class SettingsWindow : Window
         KokoroEnglishCombo.SelectedItem = english.FirstOrDefault(v => v.Id == s.KokoroVoiceEnglish) ?? english.FirstOrDefault();
         KokoroSpanishCombo.SelectedItem = spanish.FirstOrDefault(v => v.Id == s.KokoroVoiceSpanish) ?? spanish.FirstOrDefault();
 
-        EngineCombo.SelectedIndex = string.Equals(s.SpeechEngine, "Kokoro", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
+        LoadGpuSettings(s);
+        EngineCombo.SelectedIndex =
+            string.Equals(s.SpeechEngine, "Kokoro", StringComparison.OrdinalIgnoreCase) ? 1 :
+            string.Equals(s.SpeechEngine, "Gpu", StringComparison.OrdinalIgnoreCase) ? 2 : 0;
         UpdateKokoroPanel();
     }
 
-    private void EngineCombo_SelectionChanged(object sender, SelectionChangedEventArgs e) => UpdateKokoroPanel();
+    private void EngineCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        UpdateKokoroPanel();
+        UpdateGpuPanel();
+    }
 
     private void UpdateKokoroPanel()
     {
@@ -385,7 +401,7 @@ public partial class SettingsWindow : Window
         KokoroPanel.Visibility = kokoro ? Visibility.Visible : Visibility.Collapsed;
         // The Windows voice ranking only matters when Windows voices do the reading.
         if (WindowsVoicesPanel != null)
-            WindowsVoicesPanel.Visibility = kokoro ? Visibility.Collapsed : Visibility.Visible;
+            WindowsVoicesPanel.Visibility = EngineCombo.SelectedIndex == 0 ? Visibility.Visible : Visibility.Collapsed;
 
         if (_downloadCts != null) return; // download in progress owns the status line
 
@@ -488,6 +504,177 @@ public partial class SettingsWindow : Window
         {
             CrashLogger.LogError("Kokoro preview failed", ex);
             KokoroStatusText.Text = $"⚠ Preview failed: {ex.Message}";
+        }
+    }
+
+    // ─── GPU voices ───────────────────────────────────────────
+
+    private GpuStatus? _gpuStatus;
+    private CancellationTokenSource? _gpuInstallCts;
+
+    private void LoadGpuSettings(AppSettings s)
+    {
+        GpuModelCombo.ItemsSource = GpuVoiceSpeaker.Engines;
+        GpuModelCombo.SelectedItem = GpuVoiceSpeaker.FindEngine(s.GpuEngine) ?? GpuVoiceSpeaker.Engines[0];
+        ReloadGpuVoices(s.GpuVoiceEnglish, s.GpuVoiceSpanish);
+
+        // nvidia-smi takes a moment: check off the UI thread
+        _ = Task.Run(() => GpuVoiceSpeaker.DetectGpu(refresh: true)).ContinueWith(t =>
+            Dispatcher.BeginInvoke(() =>
+            {
+                _gpuStatus = t.IsCompletedSuccessfully ? t.Result : new GpuStatus(null, 0, null, "Could not check the GPU.");
+                UpdateGpuPanel();
+            }));
+    }
+
+    private void ReloadGpuVoices(string? english, string? spanish)
+    {
+        var voices = GpuVoiceSpeaker.GetVoices();
+        var en = voices.Where(v => v.LangCode == "en").ToList();
+        var es = voices.Where(v => v.LangCode == "es").ToList();
+        GpuEnglishCombo.ItemsSource = en;
+        GpuSpanishCombo.ItemsSource = es;
+        GpuEnglishCombo.SelectedItem = en.FirstOrDefault(v => v.Id == english) ?? en.FirstOrDefault();
+        GpuSpanishCombo.SelectedItem = es.FirstOrDefault(v => v.Id == spanish) ?? es.FirstOrDefault();
+    }
+
+    private void GpuModelCombo_SelectionChanged(object sender, SelectionChangedEventArgs e) => UpdateGpuPanel();
+
+    private void UpdateGpuPanel()
+    {
+        if (GpuPanel == null || EngineCombo == null || GpuModelCombo == null) return;
+        GpuPanel.Visibility = EngineCombo.SelectedIndex == 2 ? Visibility.Visible : Visibility.Collapsed;
+
+        var engine = GpuModelCombo.SelectedItem as GpuEngineInfo;
+        if (engine != null)
+            GpuModelInfoText.Text = $"{engine.Description} Needs ≈ {engine.DownloadGb:0.#} GB of disk; " +
+                                    $"keeps ≈ {engine.VramGb:0.#} GB of GPU memory while MagniReader runs. {engine.License}.";
+
+        // GPU check: green line when fine, warning box and disabled controls when not
+        var gpu = _gpuStatus;
+        bool canRun = gpu?.CanRun == true;
+        if (gpu == null)
+            GpuWarningText.Text = "⚠ GPU voices need an NVIDIA graphics card (6 GB or more) with a recent driver. Checking this PC…";
+        else if (!canRun)
+            GpuWarningText.Text = $"⚠ GPU voices are not available on this PC. {gpu.Problem}";
+        else
+            GpuWarningText.Text = $"✓ {gpu.Name} found ({gpu.VramMb / 1024.0:0} GB, driver {gpu.Driver}). " +
+                                  "GPU voices only work on PCs with an NVIDIA GPU like this one.";
+        GpuWarningBox.Background = canRun ? Brush(0x1E, 0x33, 0x24) : Brush(0x3A, 0x2A, 0x1A);
+        GpuWarningBox.BorderBrush = canRun ? Brush(0x66, 0xBB, 0x6A) : Brush(0xF9, 0xA8, 0x25);
+        GpuWarningText.Foreground = canRun ? Brush(0xC8, 0xE6, 0xC9) : Brush(0xFF, 0xE0, 0x82);
+        if (gpu != null && !canRun)
+            GpuEngineItem.Content = "GPU voices (not available: no suitable NVIDIA GPU)";
+
+        bool installed = engine != null && GpuVoiceSpeaker.IsInstalled(engine.Id);
+        bool busy = _gpuInstallCts != null;
+        GpuModelCombo.IsEnabled = !busy;
+        GpuPreviewEnBtn.IsEnabled = GpuPreviewEsBtn.IsEnabled = canRun && installed && !busy;
+        if (busy) return; // the install owns the status line
+
+        if (gpu != null && !canRun)
+        {
+            GpuStatusText.Text = "Pick Kokoro or Windows voices instead.";
+            GpuInstallBtn.Visibility = Visibility.Collapsed;
+        }
+        else if (engine != null && installed)
+        {
+            GpuStatusText.Text = GpuVoiceSpeaker.Shared.IsReady(engine.Id)
+                ? $"✓ {engine.DisplayName} is installed and loaded on the GPU."
+                : $"✓ {engine.DisplayName} is installed. It loads on the GPU (10–30 s) after you save.";
+            GpuInstallBtn.Visibility = Visibility.Collapsed;
+        }
+        else if (engine != null)
+        {
+            GpuStatusText.Text = "Not installed yet. Installing downloads Python, PyTorch (CUDA) and the model " +
+                                 $"(≈ {engine.DownloadGb:0.#} GB on disk) into %LOCALAPPDATA%\\MagniReader\\gpu-tts. Until then Kokoro or Windows voices read.";
+            GpuInstallBtn.Content = $"⬇ Install {engine.DisplayName} (≈ {engine.DownloadGb:0.#} GB)";
+            GpuInstallBtn.Visibility = gpu == null ? Visibility.Collapsed : Visibility.Visible;
+        }
+    }
+
+    private async void GpuInstall_Click(object sender, RoutedEventArgs e)
+    {
+        if (_gpuInstallCts != null) { _gpuInstallCts.Cancel(); return; }
+        if (GpuModelCombo.SelectedItem is not GpuEngineInfo engine) return;
+
+        var cts = _gpuInstallCts = new CancellationTokenSource();
+        GpuInstallBtn.Content = "✖ Cancel install";
+        GpuProgress.Visibility = Visibility.Visible;
+        UpdateGpuPanel();
+        GpuStatusText.Text = "Starting the install…";
+        var progress = new Progress<string>(msg => { if (_gpuInstallCts == cts) GpuStatusText.Text = msg; });
+        try
+        {
+            await GpuVoiceSpeaker.Shared.InstallAsync(engine.Id, progress, cts.Token);
+            _gpuInstallCts = null;
+            UpdateGpuPanel();
+            GpuStatusText.Text = $"✓ {engine.DisplayName} is installed and running. Press ▶ to hear it, then Save.";
+        }
+        catch (OperationCanceledException)
+        {
+            _gpuInstallCts = null;
+            UpdateGpuPanel();
+            GpuStatusText.Text = "Install cancelled. Finished downloads are kept, so installing again resumes.";
+        }
+        catch (Exception ex)
+        {
+            CrashLogger.LogError("GPU voice install failed", ex);
+            _gpuInstallCts = null;
+            UpdateGpuPanel();
+            GpuStatusText.Text = $"⚠ Install failed: {ex.Message}";
+        }
+        finally
+        {
+            GpuProgress.Visibility = Visibility.Collapsed;
+            cts.Dispose();
+        }
+    }
+
+    private void PreviewGpuEnglish_Click(object sender, RoutedEventArgs e) =>
+        PreviewGpu(GpuEnglishCombo.SelectedItem as GpuVoiceInfo);
+
+    private void PreviewGpuSpanish_Click(object sender, RoutedEventArgs e) =>
+        PreviewGpu(GpuSpanishCombo.SelectedItem as GpuVoiceInfo);
+
+    private async void PreviewGpu(GpuVoiceInfo? voice)
+    {
+        if (voice == null || GpuModelCombo.SelectedItem is not GpuEngineInfo engine) return;
+        try
+        {
+            if (!GpuVoiceSpeaker.Shared.IsReady(engine.Id))
+            {
+                GpuStatusText.Text = $"Loading {engine.DisplayName} on the GPU…";
+                GpuProgress.Visibility = Visibility.Visible;
+            }
+            float speed = RateSlider.Value >= 0 ? 1f + (float)RateSlider.Value * 0.1f : 1f + (float)RateSlider.Value * 0.05f;
+            var preview = GpuVoiceSpeaker.Shared.PreviewAsync(engine.Id, voice.Id, voice.LangCode, speed);
+            await GpuVoiceSpeaker.Shared.EnsureStartedAsync(engine.Id);
+            GpuProgress.Visibility = Visibility.Collapsed;
+            UpdateGpuPanel();
+            await preview;
+        }
+        catch (Exception ex)
+        {
+            CrashLogger.LogError("GPU voice preview failed", ex);
+            GpuProgress.Visibility = Visibility.Collapsed;
+            GpuStatusText.Text = $"⚠ Preview failed: {ex.Message}";
+        }
+    }
+
+    private void GpuOpenVoicesFolder_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            System.IO.Directory.CreateDirectory(GpuVoiceSpeaker.UserVoicesDirectory);
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("explorer.exe",
+                $"\"{GpuVoiceSpeaker.UserVoicesDirectory}\"") { UseShellExecute = true });
+            GpuStatusText.Text = "Add a .wav (5–15 s, one speaker) and a .txt with the same name holding its exact words. " +
+                                 "Start the name with es_ for Spanish or en_ for English, then reopen Settings.";
+        }
+        catch (Exception ex)
+        {
+            GpuStatusText.Text = $"⚠ Could not open the folder: {ex.Message}";
         }
     }
 

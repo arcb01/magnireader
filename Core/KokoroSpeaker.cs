@@ -258,12 +258,35 @@ public sealed class KokoroSpeaker : IDisposable
         var voice = GetVoice(voiceId) ?? throw new FileNotFoundException($"Kokoro voice '{voiceId}' not found in {VoicesDirectory}");
         string langCode = voice.GetLangCode();
         speed = Math.Clamp(speed, 0.5f, 2.0f);
-        var sw = Stopwatch.StartNew();
 
-        var chunks = SplitIntoChunks(text);
+        return await PlayChunksAsync("Kokoro", text, SplitIntoChunks(text), () => Volume,
+            (start, length, ct) =>
+            {
+                lock (_synthLock)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    return Task.FromResult(SynthesizeChunk(model, text, start, length, voice, langCode, speed));
+                }
+            },
+            onWord, onAudioStarted, token, control);
+    }
+
+    /// <summary>
+    /// Plays <paramref name="text"/> chunk by chunk: each chunk is synthesized by
+    /// <paramref name="synthesize"/> (24 kHz mono samples + word start times in seconds)
+    /// and playback starts as soon as the first one is ready. Shared by Kokoro and the
+    /// GPU voices, so both get the same pause / seek / word highlight behaviour.
+    /// </summary>
+    internal static async Task<bool> PlayChunksAsync(string tag, string text, List<(int start, int length)> chunks,
+        Func<float> volume,
+        Func<int, int, CancellationToken, Task<(float[] samples, List<(int pos, int len, double sec)> words)>> synthesize,
+        Action<int, int>? onWord, Action<double>? onAudioStarted, CancellationToken token,
+        KokoroPlaybackControl? control)
+    {
+        var sw = Stopwatch.StartNew();
         if (chunks.Count == 0) return false;
 
-        var provider = new SeekableSampleProvider(SampleRate, () => Volume);
+        var provider = new SeekableSampleProvider(SampleRate, volume);
         // (sample offset in the content timeline, charPos, charLen)
         var timings = new List<(long sample, int pos, int len)>();
         var timingsLock = new object();
@@ -286,9 +309,10 @@ public sealed class KokoroSpeaker : IDisposable
         try
         {
             bool started = false;
-            await Task.Run(() =>
+            await Task.Run(async () =>
             {
                 long enqueued = 0;
+                int failures = 0;
                 for (int c = 0; c < chunks.Count; c++)
                 {
                     token.ThrowIfCancellationRequested();
@@ -298,19 +322,18 @@ public sealed class KokoroSpeaker : IDisposable
                     List<(int pos, int len, double sec)> words;
                     try
                     {
-                        lock (_synthLock)
-                        {
-                            token.ThrowIfCancellationRequested();
-                            (samples, words) = SynthesizeChunk(model, text, start, length, voice, langCode, speed);
-                        }
+                        (samples, words) = await synthesize(start, length, token);
                     }
-                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    catch (Exception ex) when (ex is not OperationCanceledException || !token.IsCancellationRequested)
                     {
-                        // One sentence the phonemizer can't handle must not stop the whole
+                        // One sentence the engine can't handle must not stop the whole
                         // reading (it used to cut the audio and jump to the next paragraph).
                         Infrastructure.CrashLogger.LogError(
-                            $"[Kokoro] Skipped chunk {c + 1}/{chunks.Count} it could not synthesize: " +
+                            $"[{tag}] Skipped chunk {c + 1}/{chunks.Count} it could not synthesize: " +
                             $"\"{Shorten(text.Substring(start, length))}\"", ex);
+                        // Nothing heard yet and the engine keeps failing (e.g. GPU server gone):
+                        // give up so the caller can fall back to another voice.
+                        if (!started && ++failures >= 2) throw;
                         continue;
                     }
                     if (samples.Length == 0) continue;
@@ -330,7 +353,7 @@ public sealed class KokoroSpeaker : IDisposable
                         waveOut.Init(new SampleToWaveProvider16(provider));
                         waveOut.Play();
                         control?.Attach(waveOut, provider); // pauses right away if Pause came early
-                        Log($"[Kokoro] Playback started at {sw.ElapsedMilliseconds}ms " +
+                        Log($"[{tag}] Playback started at {sw.ElapsedMilliseconds}ms " +
                             $"(first of {chunks.Count} sentence chunks, {samples.Length * 1000 / SampleRate}ms of audio)");
 
                         // Rough total for the progress animation: this chunk's pace × whole text
@@ -341,16 +364,16 @@ public sealed class KokoroSpeaker : IDisposable
                     }
                 }
                 provider.Complete();
-                Log($"[Kokoro] All {chunks.Count} chunks synthesized at {sw.ElapsedMilliseconds}ms");
+                Log($"[{tag}] All {chunks.Count} chunks synthesized at {sw.ElapsedMilliseconds}ms");
             }, token);
 
             if (!started)
             {
-                Log($"[Kokoro] No speakable audio in {chunks.Count} chunks");
+                Log($"[{tag}] No speakable audio in {chunks.Count} chunks");
                 return false;
             }
             await finished.Task;
-            Log($"[Kokoro] Playback finished at {sw.ElapsedMilliseconds}ms");
+            Log($"[{tag}] Playback finished at {sw.ElapsedMilliseconds}ms");
             return true;
         }
         finally
@@ -462,7 +485,7 @@ public sealed class KokoroSpeaker : IDisposable
     /// written words they match one to one. Otherwise (numbers, abbreviations and
     /// symbols get expanded) each word is placed proportionally by letter count.
     /// </summary>
-    private static List<(int pos, int len, double sec)> AlignWords(
+    internal static List<(int pos, int len, double sec)> AlignWords(
         string chunkText, int chunkStart, int[] tokens, PhonemeTimestamp[]? stamps, double skippedSec, double audioSec)
     {
         // Written words: runs of non-whitespace that contain a letter or digit

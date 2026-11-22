@@ -113,7 +113,7 @@ public partial class ControlBarWindow : Window
         FasterButton.IsEnabled = rate < 10;
     }
 
-    public void SetEngine(bool kokoro) => EngineText.Text = kokoro ? "Kokoro" : "Windows";
+    public void SetEngine(string engineName) => EngineText.Text = engineName;
 
     // ─── Handlers ───────────────────────────────────────────────
 
