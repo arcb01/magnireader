@@ -127,6 +127,12 @@ public class AppSettings
     /// </summary>
     public Dictionary<string, List<string>> VoicePriorities { get; set; } = new();
 
+    /// <summary>
+    /// Language text is read in: "auto" (detected per reading) or a two-letter code
+    /// ("en", "es", …) that overrides detection. Picked on the reading strip or in Settings.
+    /// </summary>
+    public string ReadingLanguage { get; set; } = "auto";
+
     // ─── Kokoro (offline neural voices) ──────────────────────────
 
     /// <summary>Speech engine: "Windows" (SAPI/OneCore voices), "Kokoro", or "Gpu" (GPU voices, NVIDIA only).</summary>

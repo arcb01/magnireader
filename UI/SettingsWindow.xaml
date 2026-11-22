@@ -173,6 +173,11 @@
                         </StackPanel>
 
                         <TextBlock Text="SPEECH" Style="{StaticResource SectionHeader}" />
+                        <TextBlock Text="Reading language" />
+                        <ComboBox x:Name="ReadingLanguageCombo" Margin="0,4,0,2" />
+                        <TextBlock Style="{StaticResource HintText}"
+                                   Text="Auto-detect picks the language of each text. Choose a language to always read in it (also on the language button above the reading box)." />
+
                         <TextBlock>
                             <Run Text="Speech rate: " />
                             <Run x:Name="RateValueText" Text="1" Foreground="#FFD700" />

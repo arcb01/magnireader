@@ -56,6 +56,9 @@ public partial class SettingsWindow : Window
     private void LoadSettings()
     {
         var s = _settingsStore.Settings;
+        ReadingLanguageCombo.ItemsSource = Core.LanguageDetector.ManualChoices.Select(c => c.Name).ToList();
+        int li = Core.LanguageDetector.ManualChoices.ToList().FindIndex(c => c.Code == s.ReadingLanguage);
+        ReadingLanguageCombo.SelectedIndex = li >= 0 ? li : 0;
         RateSlider.Value = s.SpeechRate;
         VolumeSlider.Value = s.Volume;
         DuckCheckBox.IsChecked = s.DuckOtherAudio;
@@ -322,6 +325,9 @@ public partial class SettingsWindow : Window
     {
         StopRecording();
         var s = _settingsStore.Settings;
+        int li = ReadingLanguageCombo.SelectedIndex;
+        if (li >= 0 && li < Core.LanguageDetector.ManualChoices.Count)
+            s.ReadingLanguage = Core.LanguageDetector.ManualChoices[li].Code;
         s.SpeechRate = (int)RateSlider.Value;
         s.Volume = (int)VolumeSlider.Value;
         s.DuckOtherAudio = DuckCheckBox.IsChecked == true;

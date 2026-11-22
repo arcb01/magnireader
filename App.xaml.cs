@@ -353,6 +353,7 @@ public partial class App : Application
             _settingsStore.Save();
             RefreshControlBar();
         };
+        _playbackStrip.LanguageRequested += OnReadingLanguageChosen;
         _speechEngine!.PauseChanged += paused =>
         {
             _playbackStrip?.SetPaused(paused);
@@ -376,6 +377,7 @@ public partial class App : Application
             }
             _playbackStrip.SetPaused(_speechEngine?.IsPaused == true);
             RefreshStripSpeed();
+            RefreshStripLanguage();
             _playbackStrip.ShowAt(box);
         };
     }
@@ -387,9 +389,36 @@ public partial class App : Application
         _playbackStrip.SetSpeed(_speechEngine.SpeedMultiplier(_settingsStore.Settings.SpeechRate));
     }
 
+    private void RefreshStripLanguage() =>
+        _playbackStrip?.SetLanguage(_settingsStore?.Settings.ReadingLanguage ?? "auto",
+            _readingCulture?.TwoLetterISOLanguageName);
+
+    /// <summary>
+    /// The user picked a reading language on the strip ("auto" or a language). It is
+    /// saved, and the reading in progress goes on in that language from the current word.
+    /// </summary>
+    private void OnReadingLanguageChosen(string code)
+    {
+        if (_settingsStore == null) return;
+        _settingsStore.Settings.ReadingLanguage = code;
+        _settingsStore.Save();
+        CrashLogger.LogTrace($"[App] Reading language picked: {code}");
+
+        if (_isReading && _speechEngine != null)
+        {
+            _readingCulture = null; // "auto": detect this text again, without the old choice
+            var culture = ChooseReadingLanguage(_currentReadingText);
+            _speechEngine.ChangeLanguage(culture, languageChosen: code != "auto");
+            if (_trayIcon != null)
+                _trayIcon.ToolTipText = $"MagniReader — Reading ({culture.EnglishName}) [{_readingIndex + 1}/{_readingQueue.Count}]...";
+        }
+        RefreshStripLanguage();
+    }
+
     private void HidePlaybackStrip()
     {
         _playbackStripShown = false;
+        _playbackStrip?.CloseMenus();
         _playbackStrip?.Hide();
     }
 
@@ -951,7 +980,8 @@ public partial class App : Application
 
         // SPEECH FIRST — this is the primary feedback the user cares about.
         // Overlay will catch up via Dispatcher below.
-        _speechEngine!.Speak(_currentReadingText, culture);
+        _speechEngine!.Speak(_currentReadingText, culture, languageChosen: ManualReadingLanguage != null);
+        RefreshStripLanguage();
         if (pipelineSw != null)
             System.Diagnostics.Debug.WriteLine(
                 $"[App] ⏱ Speak() dispatched: {pipelineSw.ElapsedMilliseconds}ms");
@@ -989,19 +1019,43 @@ public partial class App : Application
                 $"[App] ⏱ Full pipeline complete: {pipelineSw.ElapsedMilliseconds}ms");
     }
 
+    /// <summary>The language the user chose on the reading strip / in Settings, or null for Auto.</summary>
+    private string? ManualReadingLanguage
+    {
+        get
+        {
+            var code = _settingsStore?.Settings.ReadingLanguage;
+            return string.IsNullOrWhiteSpace(code) || code.Equals("auto", StringComparison.OrdinalIgnoreCase)
+                ? null : code;
+        }
+    }
+
     /// <summary>
-    /// Detects the language once per reading and keeps it: later elements only switch
-    /// language when they hold enough text (80+ letters) to be sure.
+    /// The language to read <paramref name="text"/> in. A language chosen by the user
+    /// always wins. Otherwise it is detected once per reading and kept: later elements
+    /// only switch language when the detector is confident about a longer text (40+
+    /// letters), so a short caption or a name doesn't flip the voice mid-reading.
     /// </summary>
     private System.Globalization.CultureInfo ChooseReadingLanguage(string text)
     {
+        var manual = ManualReadingLanguage;
+        if (manual != null)
+        {
+            try { return _readingCulture = System.Globalization.CultureInfo.GetCultureInfo(manual); }
+            catch (System.Globalization.CultureNotFoundException) { /* bad value in settings: detect */ }
+        }
+
         int letters = text.Count(char.IsLetter);
-        if (_readingCulture != null && letters < 80)
+        if (_readingCulture != null && letters < 40)
             return _readingCulture;
 
-        var detected = _langDetector!.DetectLanguage(text);
+        var guess = _langDetector!.Detect(text, hint: _readingCulture?.TwoLetterISOLanguageName);
+        if (_readingCulture != null && !guess.IsConfident)
+            return _readingCulture;
+
+        var detected = guess.Culture;
         if (_readingCulture == null || detected.TwoLetterISOLanguageName != _readingCulture.TwoLetterISOLanguageName)
-            CrashLogger.LogTrace($"[App] Reading language: {detected.Name} ({letters} letters)");
+            CrashLogger.LogTrace($"[App] Reading language: {detected.Name} ({letters} letters, confidence {guess.Confidence:F2})");
         _readingCulture = detected;
         return detected;
     }

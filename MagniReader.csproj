@@ -20,7 +20,7 @@
     <Version>0.0.0-dev</Version>
     <Product>MagniReader</Product>
     <!-- Exclude non-code directories from compilation -->
-    <DefaultItemExcludes>$(DefaultItemExcludes);scripts\**</DefaultItemExcludes>
+    <DefaultItemExcludes>$(DefaultItemExcludes);scripts\**;tests\**</DefaultItemExcludes>
   </PropertyGroup>
 
   <ItemGroup>

@@ -59,6 +59,7 @@ public class SpeechEngine : IDisposable
     // _lastWordPos the last word reached, both in positions of _fullText.
     private string _fullText = string.Empty;
     private CultureInfo _speakCulture = CultureInfo.CurrentUICulture;
+    private bool _languageChosen; // picked by the user: no automatic re-check
     private int _charOffset;
     private volatile int _lastWordPos = -1;
     // Rate changes are applied a moment after the last click, so stepping through
@@ -305,10 +306,13 @@ public class SpeechEngine : IDisposable
     /// Prefers WinRT path (native OneCore, same as Windows Narrator) for lower latency.
     /// Falls back to SAPI5 for voices without WinRT equivalents.
     /// </summary>
-    public void Speak(string text, CultureInfo culture)
+    /// <param name="languageChosen">True when the user picked the language by hand: it is
+    /// used as is, without the English/Spanish re-check for Kokoro and GPU voices.</param>
+    public void Speak(string text, CultureInfo culture, bool languageChosen = false)
     {
         _fullText = CleanForSpeech(text);
         _speakCulture = culture;
+        _languageChosen = languageChosen;
         _lastWordPos = -1;
         SpeakFrom(0);
     }
@@ -343,7 +347,8 @@ public class SpeechEngine : IDisposable
         {
             // 0. Kokoro, if selected and it has a voice for this language
             // (A restart after a speed change keeps the language picked for the whole text.)
-            if ((_kokoroEnabled || _gpuEnabled) && offset == 0) _speakCulture = culture = RecheckLanguageForKokoro(text, culture);
+            if ((_kokoroEnabled || _gpuEnabled) && offset == 0 && !_languageChosen)
+                _speakCulture = culture = RecheckLanguageForKokoro(text, culture);
             if (await TrySpeakViaGpuAsync(text, culture, token)) return;
             if (token.IsCancellationRequested) return;
             if (await TrySpeakViaKokoroAsync(text, culture, token)) return;
@@ -1727,10 +1732,24 @@ public class SpeechEngine : IDisposable
         _restartTimer?.Stop();
     }
 
+    /// <summary>
+    /// Switches the reading in progress to <paramref name="culture"/> (the user picked a
+    /// language on the reading strip): the voice for that language goes on from the word
+    /// being spoken. Call on the UI thread.
+    /// </summary>
+    public void ChangeLanguage(CultureInfo culture, bool languageChosen)
+    {
+        bool changed = culture.TwoLetterISOLanguageName != _speakCulture.TwoLetterISOLanguageName;
+        _speakCulture = culture;
+        _languageChosen = languageChosen;
+        LogTrace($"[Speech] Language set to {culture.Name} ({(languageChosen ? "chosen" : "auto")})");
+        if (changed && _isSpeaking) ScheduleRestart();
+    }
+
     private void RestartAtCurrentWord()
     {
         int from = _lastWordPos >= _charOffset ? _lastWordPos : _charOffset;
-        LogTrace($"[Speech] Speed changed: restarting at char {from}/{_fullText.Length} (rate {_rate})");
+        LogTrace($"[Speech] Restarting at char {from}/{_fullText.Length} (rate {_rate}, lang {_speakCulture.Name})");
         _restarting = true;
         try { SpeakFrom(from); }
         finally { _restarting = false; }

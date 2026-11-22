@@ -1,11 +1,13 @@
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Interop;
 using MagniReader.Helpers;
 
 namespace MagniReader.UI;
 
 /// <summary>
-/// Small strip of playback controls (back 10 s, pause/play, forward 10 s, speed, stop) that
+/// Small strip of playback controls (back 10 s, pause/play, forward 10 s, speed, reading
+/// language, stop) that
 /// floats just above the box of the text being read.
 ///
 /// Like the control bar it never takes focus (WS_EX_NOACTIVATE), so the reading and the
@@ -20,6 +22,7 @@ public partial class PlaybackStripWindow : Window
     public event Action<double>? SkipRequested;   // seconds, negative = back
     public event Action? StopRequested;
     public event Action? SpeedRequested;          // next speed preset
+    public event Action<string>? LanguageRequested; // "auto" or a two-letter code
 
     public const double SkipSeconds = 10;
 
@@ -110,14 +113,157 @@ public partial class PlaybackStripWindow : Window
         SpeedButton.ToolTip = $"Reading speed {label} (click for the next speed)";
     }
 
+    // ─── Reading language ────────────────────────────────────────
+
+    /// <summary>
+    /// Shows the reading language on its button: "Auto · ES" while detecting (with the
+    /// language detected for this text), or just "ES" when the user chose one.
+    /// </summary>
+    /// <param name="setting">"auto" or a two-letter code.</param>
+    /// <param name="current">Language being read now (two-letter code), if known.</param>
+    public void SetLanguage(string setting, string? current)
+    {
+        _languageSetting = string.IsNullOrEmpty(setting) ? "auto" : setting;
+        bool auto = _languageSetting == "auto";
+        string? shown = auto ? current : _languageSetting;
+        string code = shown?.ToUpperInvariant() ?? "";
+
+        LanguageText.Text = auto ? (code.Length > 0 ? $"Auto · {code}" : "Auto") : code;
+        LanguageButton.ToolTip = auto
+            ? $"Reading language: detected automatically{(shown != null ? $" ({LanguageName(shown)})" : "")}. Click to choose one."
+            : $"Reading language: {LanguageName(_languageSetting)} (chosen by you). Click to change it or go back to Auto.";
+        System.Windows.Automation.AutomationProperties.SetName(LanguageButton,
+            auto ? $"Reading language, auto{(shown != null ? ", " + LanguageName(shown) : "")}"
+                 : $"Reading language, {LanguageName(_languageSetting)}");
+    }
+
+    private string _languageSetting = "auto";
+    private IntPtr _popupHwnd;
+    private System.Windows.Threading.DispatcherTimer? _popupCloseTimer;
+
+    private static string LanguageName(string code) =>
+        Core.LanguageDetector.ManualChoices.FirstOrDefault(c => c.Code == code).Name ?? code;
+
+    private void LanguageButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (LanguagePopup.IsOpen) { LanguagePopup.IsOpen = false; return; }
+        BuildLanguageList();
+        LanguagePopup.IsOpen = true;
+    }
+
+    private void BuildLanguageList()
+    {
+        LanguageList.Children.Clear();
+        foreach (var (code, name) in Core.LanguageDetector.ManualChoices)
+        {
+            bool selected = code == _languageSetting;
+            var row = new Grid();
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(22) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+            var check = new System.Windows.Controls.TextBlock
+            {
+                Text = selected ? "" : "",
+                FontFamily = (System.Windows.Media.FontFamily)FindResource("IconFont"),
+                FontSize = 12,
+                Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xFF, 0xD7, 0x00)),
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            var label = new System.Windows.Controls.TextBlock
+            {
+                Text = name,
+                FontWeight = selected ? FontWeights.SemiBold : FontWeights.Normal,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            var tag = new System.Windows.Controls.TextBlock
+            {
+                Text = code == "auto" ? "" : code.ToUpperInvariant(),
+                FontSize = 11,
+                Margin = new Thickness(12, 0, 0, 0),
+                Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x6C, 0x70, 0x86)),
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            Grid.SetColumn(label, 1);
+            Grid.SetColumn(tag, 2);
+            row.Children.Add(check);
+            row.Children.Add(label);
+            row.Children.Add(tag);
+
+            var button = new System.Windows.Controls.Button
+            {
+                Content = row,
+                Style = (Style)FindResource("ListButton"),
+                ToolTip = code == "auto"
+                    ? "Detect the language of each text automatically"
+                    : $"Always read in {name} until you change it",
+            };
+            System.Windows.Automation.AutomationProperties.SetName(button, name);
+            string chosen = code;
+            button.Click += (_, _) =>
+            {
+                LanguagePopup.IsOpen = false;
+                if (chosen != _languageSetting) LanguageRequested?.Invoke(chosen);
+            };
+            LanguageList.Children.Add(button);
+
+            if (code == "auto")
+                LanguageList.Children.Add(new System.Windows.Shapes.Rectangle
+                {
+                    Height = 1, Margin = new Thickness(6, 3, 6, 3),
+                    Fill = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x45, 0x47, 0x5A)),
+                });
+        }
+    }
+
+    private void LanguagePopup_Opened(object? sender, EventArgs e)
+    {
+        // The list is its own window: remember it so clicks on it count as clicks on
+        // MagniReader (see ContainsScreenPoint), and keep it out of OCR screenshots.
+        if (PresentationSource.FromVisual(LanguagePopup.Child) is HwndSource source)
+        {
+            _popupHwnd = source.Handle;
+            try { NativeInterop.SetWindowDisplayAffinity(_popupHwnd, NativeInterop.WDA_EXCLUDEFROMCAPTURE); }
+            catch { }
+        }
+
+        // The strip never takes focus, so it can't rely on a click elsewhere to close the
+        // list: close it once the mouse has been away from the list and its button for a
+        // moment, like a menu.
+        if (_popupCloseTimer == null)
+        {
+            _popupCloseTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(700) };
+            _popupCloseTimer.Tick += (_, _) =>
+            {
+                if (LanguageList.IsMouseOver || LanguageButton.IsMouseOver) { _mouseAwayTicks = 0; return; }
+                if (++_mouseAwayTicks >= 2) LanguagePopup.IsOpen = false;
+            };
+        }
+        _mouseAwayTicks = 0;
+        _popupCloseTimer.Start();
+    }
+
+    private int _mouseAwayTicks;
+
+    private void LanguagePopup_Closed(object? sender, EventArgs e)
+    {
+        _popupCloseTimer?.Stop();
+        _popupHwnd = IntPtr.Zero;
+    }
+
+    /// <summary>Closes the language list (the strip is being hidden).</summary>
+    public void CloseMenus() => LanguagePopup.IsOpen = false;
+
     /// <summary>
     /// True when the physical-pixel screen point (from the low-level mouse hook) is on
-    /// the visible strip.
+    /// the visible strip or its open language list.
     /// </summary>
     /// <remarks>Called from the input hook thread: uses only Win32, no WPF properties.</remarks>
-    public bool ContainsScreenPoint(int x, int y)
+    public bool ContainsScreenPoint(int x, int y) =>
+        WindowContains(_hwnd, x, y) || WindowContains(_popupHwnd, x, y);
+
+    private static bool WindowContains(IntPtr hwnd, int x, int y)
     {
-        var hwnd = _hwnd;
         if (hwnd == IntPtr.Zero || !NativeInterop.IsWindowVisible(hwnd)) return false;
         if (!NativeInterop.GetWindowRect(hwnd, out var r)) return false;
         return x >= r.Left && x < r.Right && y >= r.Top && y < r.Bottom;
