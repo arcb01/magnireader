@@ -1088,6 +1088,7 @@ public partial class App : Application
         _updateTimer?.Stop();
         _updateTimer = null;
         if (_updateService == null || !_updateService.IsInstalled) return;
+        if (_updateService.UpdatesManagedByAdmin) return; // IT deploys new versions
         if (_settingsStore?.Settings.AutoCheckUpdates != true) return;
 
         // First check shortly after startup (don't slow the launch), then every 6 hours.
@@ -1118,6 +1119,11 @@ public partial class App : Application
             case UpdateService.CheckResult.Failed:
                 _trayIcon?.ShowBalloonTip("MagniReader",
                     "Couldn't check for updates. Are you online?", BalloonIcon.Warning);
+                break;
+            case UpdateService.CheckResult.Managed:
+                _trayIcon?.ShowBalloonTip("MagniReader",
+                    $"Updates are managed by your organization (version {_updateService.CurrentVersion}).",
+                    BalloonIcon.Info);
                 break;
             // UpdateReady shows its own balloon via OnUpdateReady
         }

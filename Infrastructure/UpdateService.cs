@@ -1,4 +1,5 @@
 using System.Reflection;
+using Microsoft.Win32;
 using Velopack;
 using Velopack.Sources;
 
@@ -17,7 +18,15 @@ public sealed class UpdateService
     private VelopackAsset? _pending;
     private readonly SemaphoreSlim _checkLock = new(1, 1);
 
-    public enum CheckResult { NotInstalled, UpToDate, UpdateReady, Failed }
+    public enum CheckResult { NotInstalled, UpToDate, UpdateReady, Failed, Managed }
+
+    /// <summary>
+    /// Registry key an administrator can set through Group Policy or Intune:
+    /// DWORD <c>DisableUpdates</c> = 1 turns updates off, 0 turns them on even for a
+    /// per-machine install. Without it, see <see cref="UpdatesManagedByAdmin"/>.
+    /// </summary>
+    public const string PolicyKeyPath = @"SOFTWARE\Policies\MagniReader";
+    public const string DisableUpdatesValue = "DisableUpdates";
 
     /// <summary>Raised (on a background thread) when an update has been downloaded and is ready to apply.</summary>
     public event Action<string>? UpdateReady;
@@ -44,6 +53,67 @@ public sealed class UpdateService
         }
     }
 
+    private bool? _managed;
+
+    /// <summary>
+    /// True when updates are left to the organisation: an admin policy turned them off,
+    /// or the app is installed where this user can't write (the per-machine MSI in
+    /// Program Files). Velopack would need admin rights to replace those files, so a
+    /// standard user would only get a UAC prompt they can't approve. IT deploys the
+    /// new MSI instead.
+    /// </summary>
+    public bool UpdatesManagedByAdmin => _managed ??= DetectManaged();
+
+    private bool DetectManaged()
+    {
+        if (!IsInstalled) return false;
+        var policy = ReadUpdatePolicy();
+        if (policy == true) { CrashLogger.LogInfo("[Update] Turned off by policy"); return true; }
+        if (policy == false) return false;
+        if (!InstallFolderIsWritable())
+        {
+            CrashLogger.LogInfo("[Update] Per-machine install: updates are deployed by the administrator");
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>true = updates disabled, false = explicitly allowed, null = no policy.</summary>
+    private static bool? ReadUpdatePolicy()
+    {
+        try
+        {
+            using var key = Registry.LocalMachine.OpenSubKey(PolicyKeyPath);
+            return key?.GetValue(DisableUpdatesValue) switch
+            {
+                int i => i != 0,
+                string str when int.TryParse(str, out var n) => n != 0,
+                _ => null,
+            };
+        }
+        catch { return null; }
+    }
+
+    /// <summary>
+    /// The install root holds Update.exe and the "current" folder (where this exe runs).
+    /// Updating rewrites both, so that root must be writable by this user.
+    /// </summary>
+    private static bool InstallFolderIsWritable()
+    {
+        try
+        {
+            var current = AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar);
+            var root = Path.GetDirectoryName(current);
+            if (string.IsNullOrEmpty(root)) return true;
+            var probe = Path.Combine(root, $".write-test-{Environment.ProcessId}");
+            using (File.Create(probe, 1, FileOptions.DeleteOnClose)) { }
+            return true;
+        }
+        catch (UnauthorizedAccessException) { return false; }
+        catch (IOException) { return false; }
+        catch { return true; } // unknown: keep the normal behaviour
+    }
+
     /// <summary>Version shown to the user, e.g. "1.2.0".</summary>
     public string CurrentVersion
     {
@@ -68,6 +138,7 @@ public sealed class UpdateService
     public async Task<CheckResult> CheckAndDownloadAsync()
     {
         if (!IsInstalled) return CheckResult.NotInstalled;
+        if (UpdatesManagedByAdmin) return CheckResult.Managed;
         if (_pending != null) return CheckResult.UpdateReady;
 
         if (!await _checkLock.WaitAsync(0)) return CheckResult.UpToDate; // a check is already running

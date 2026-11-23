@@ -20,3 +20,19 @@ jobs:
       # (the csproj fails the publish if they are missing).
       - name: Publish (as the installer does)
         run: dotnet publish MagniReader.csproj -c Release -r win-x64 --self-contained true -o publish
+
+      # Pack the installers the same way the Release workflow does (unsigned, nothing is
+      # uploaded), so a broken Setup.exe or MSI shows up on the PR rather than at release.
+      - name: Pack Setup.exe and MSI (unsigned)
+        shell: pwsh
+        run: |
+          dotnet tool install -g vpk --version 1.2.161
+          vpk pack --packId MagniReader --packVersion 0.0.1 --packDir publish --mainExe MagniReader.exe `
+            --packTitle MagniReader --packAuthors arcb01 --icon app.ico --shortcuts Desktop,StartMenuRoot `
+            --msi --instLocation PerMachine --msiVersion 0.0.1
+          if ($LASTEXITCODE -ne 0) { throw "vpk pack failed ($LASTEXITCODE)" }
+          Get-ChildItem Releases | Format-Table Name, Length
+
+      - name: List files that need signing
+        shell: pwsh
+        run: ./scripts/check-signatures.ps1 -ReleaseDir Releases -Version 0.0.1

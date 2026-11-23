@@ -14,6 +14,7 @@ name: Release
 #     add yourself as a required reviewer so every run waits for your approval.
 #   - Only commits already on main can be released.
 #   - Code signing turns on automatically when its secrets exist (see "Signing" below).
+#   - Enterprise deployment (the MSI, policies, signing) is described in docs/enterprise.md.
 
 on:
   push:
@@ -81,49 +82,83 @@ jobs:
       #   Azure Trusted Signing: AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET,
       #     plus TRUSTED_SIGNING_METADATA (the metadata.json content: Endpoint,
       #     CodeSigningAccountName, CertificateProfileName)
+      #   Cloud or hardware certificate (DigiCert KeyLocker, SSL.com eSigner, Sectigo…):
+      #     SIGN_TEMPLATE, a signing command where {{file}} is the file to sign, e.g.
+      #     signtool sign /sha1 <thumbprint> /fd sha256 /tr http://timestamp.digicert.com /td sha256 {{file}}
+      #     (install the provider's signing tool in a step before this one if it needs one)
       #   Certificate file: SIGN_PFX_BASE64 (the .pfx, base64) and SIGN_PFX_PASSWORD
+      #     (only older certificates; new ones can't be exported to a file)
+      # vpk then signs every exe/dll we ship that isn't signed yet (MagniReader.exe and
+      # its DLLs, the third-party DLLs, Update.exe, the launcher stub), Setup.exe and the MSI.
       # Without them the release is unsigned (Windows SmartScreen will warn on install).
-      - name: Prepare signing
-        id: sign
-        shell: pwsh
-        env:
-          TRUSTED_SIGNING_METADATA: ${{ secrets.TRUSTED_SIGNING_METADATA }}
-          SIGN_PFX_BASE64: ${{ secrets.SIGN_PFX_BASE64 }}
-          SIGN_PFX_PASSWORD: ${{ secrets.SIGN_PFX_PASSWORD }}
-        run: |
-          $signArgs = ''
-          if ($env:TRUSTED_SIGNING_METADATA) {
-            $file = Join-Path $env:RUNNER_TEMP 'trusted-signing.json'
-            Set-Content -Path $file -Value $env:TRUSTED_SIGNING_METADATA -NoNewline
-            $signArgs = "--azureTrustedSignFile $file"
-            Write-Host 'Signing with Azure Trusted Signing'
-          } elseif ($env:SIGN_PFX_BASE64) {
-            $pfx = Join-Path $env:RUNNER_TEMP 'sign.pfx'
-            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:SIGN_PFX_BASE64))
-            $signArgs = "--signParams `"/f $pfx /p $env:SIGN_PFX_PASSWORD /fd sha256 /tr http://timestamp.digicert.com /td sha256`""
-            Write-Host 'Signing with the certificate file'
-          } else {
-            Write-Host '::warning::No signing secrets set: this release is NOT code-signed.'
-          }
-          "args=$signArgs" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-
-      - name: Pack installer and update packages
+      #
+      # Outputs (in Releases/):
+      #   MagniReader-win-Setup.exe  one-click per-user install to %LocalAppData%, auto-updates
+      #   MagniReader-win.msi        per-machine install to Program Files for IT (Intune, GPO,
+      #                              SCCM): msiexec /i MagniReader-win.msi /qn
+      #   portable zip, full + delta update packages
+      - name: Pack installer, MSI and update packages
         shell: pwsh
         env:
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-        run: >
-          vpk pack
-          --packId MagniReader
-          --packVersion ${{ env.VERSION }}
-          --packDir publish
-          --mainExe MagniReader.exe
-          --packTitle MagniReader
-          --packAuthors arcb01
-          --icon app.ico
-          --shortcuts Desktop,StartMenuRoot
-          ${{ steps.sign.outputs.args }}
+          TRUSTED_SIGNING_METADATA: ${{ secrets.TRUSTED_SIGNING_METADATA }}
+          SIGN_TEMPLATE: ${{ secrets.SIGN_TEMPLATE }}
+          SIGN_PFX_BASE64: ${{ secrets.SIGN_PFX_BASE64 }}
+          SIGN_PFX_PASSWORD: ${{ secrets.SIGN_PFX_PASSWORD }}
+        run: |
+          # MSI versions are numbers only (major.minor.patch, no "-beta" suffix).
+          $msiVersion = ($env:VERSION -split '-')[0]
+
+          $vpkArgs = @(
+            'pack',
+            '--packId', 'MagniReader',
+            '--packVersion', $env:VERSION,
+            '--packDir', 'publish',
+            '--mainExe', 'MagniReader.exe',
+            '--packTitle', 'MagniReader',
+            '--packAuthors', 'arcb01',
+            '--icon', 'app.ico',
+            '--shortcuts', 'Desktop,StartMenuRoot',
+            # Per-machine MSI next to Setup.exe. It installs to Program Files, which
+            # AppLocker/WDAC default rules allow and standard users can't modify.
+            '--msi',
+            '--instLocation', 'PerMachine',
+            '--msiVersion', $msiVersion
+          )
+
+          $signed = $true
+          if ($env:TRUSTED_SIGNING_METADATA) {
+            $file = Join-Path $env:RUNNER_TEMP 'trusted-signing.json'
+            Set-Content -Path $file -Value $env:TRUSTED_SIGNING_METADATA -NoNewline
+            $vpkArgs += @('--azureTrustedSignFile', $file)
+            Write-Host 'Signing with Azure Trusted Signing'
+          } elseif ($env:SIGN_TEMPLATE) {
+            $vpkArgs += @('--signTemplate', $env:SIGN_TEMPLATE)
+            Write-Host 'Signing with the SIGN_TEMPLATE command'
+          } elseif ($env:SIGN_PFX_BASE64) {
+            $pfx = Join-Path $env:RUNNER_TEMP 'sign.pfx'
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:SIGN_PFX_BASE64))
+            $vpkArgs += @('--signParams', "/f `"$pfx`" /p $env:SIGN_PFX_PASSWORD /fd sha256 /tr http://timestamp.digicert.com /td sha256")
+            Write-Host 'Signing with the certificate file'
+          } else {
+            $signed = $false
+            Write-Host '::warning::No signing secrets set: this release is NOT code-signed.'
+          }
+          "SIGNED=$signed" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+          vpk @vpkArgs
+          if ($LASTEXITCODE -ne 0) { throw "vpk pack failed ($LASTEXITCODE)" }
+          if (-not (Get-ChildItem Releases -Filter *.msi)) { throw 'vpk did not produce the MSI.' }
+
+      # Lists every exe, dll and msi in the release with its signature (job summary).
+      # When signing is set up, the release stops here if one of them is unsigned.
+      - name: Check signatures
+        shell: pwsh
+        run: |
+          $require = $env:SIGNED -eq 'True'
+          ./scripts/check-signatures.ps1 -ReleaseDir Releases -Version $env:VERSION -RequireSigned:$require
 
       # Uploaded as a draft (no --publish): users only get it once you publish it by hand.
       - name: Upload to GitHub Releases (draft)
