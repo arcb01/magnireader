@@ -22,6 +22,11 @@ Endpoints (all need the header  X-Magni-Token: <MAGNI_TTS_TOKEN env var>):
 Every engine clones the accent of a reference clip (a .wav plus a .txt with its
 exact transcript). MagniReader ships a Castilian Spanish clip and an English one;
 users can add their own clips to the voices folder.
+
+Environment (set by MagniReader):
+    MAGNI_MODEL_PATH   load the model from this folder instead of its Hugging Face id
+                       (the offline GPU voice pack that IT deploys, see docs/gpu-voices-it.md)
+    HF_HUB_OFFLINE=1   never contact Hugging Face (set once the model is installed)
 """
 
 from __future__ import annotations
@@ -184,6 +189,24 @@ class Engine:
         raise NotImplementedError
 
 
+def model_source(repo_id: str) -> str:
+    """The pack's local copy of the model when MagniReader points at one, else the Hub id."""
+    local = os.environ.get("MAGNI_MODEL_PATH")
+    return local if local and os.path.isdir(local) else repo_id
+
+
+def use_system_certificates():
+    """
+    Trust the Windows certificate store, so downloads work behind a company proxy that
+    inspects TLS with its own root certificate (Python only trusts certifi's list otherwise).
+    """
+    try:
+        import truststore
+        truststore.inject_into_ssl()
+    except Exception:
+        pass
+
+
 class OmniVoiceEngine(Engine):
     name = "omnivoice"
     native_speed = True
@@ -191,7 +214,7 @@ class OmniVoiceEngine(Engine):
     def load(self):
         import torch
         from omnivoice import OmniVoice
-        self.model = OmniVoice.from_pretrained("k2-fsa/OmniVoice", device_map="cuda", dtype=torch.float16)
+        self.model = OmniVoice.from_pretrained(model_source("k2-fsa/OmniVoice"), device_map="cuda", dtype=torch.float16)
         self.prompts = {}
         self.num_step = int(os.environ.get("MAGNI_OMNI_STEPS", "16"))
 
@@ -221,7 +244,7 @@ class Qwen3Engine(Engine):
 
     def load(self):
         from faster_qwen3_tts import FasterQwen3TTS
-        self.model = FasterQwen3TTS.from_pretrained(f"Qwen/Qwen3-TTS-12Hz-{self.size}-Base")
+        self.model = FasterQwen3TTS.from_pretrained(model_source(f"Qwen/Qwen3-TTS-12Hz-{self.size}-Base"))
 
     def synth(self, text, lang, voice, speed):
         wavs, sr = self.model.generate_voice_clone(
@@ -365,6 +388,7 @@ def main():
     ap.add_argument("--parent-pid", type=int, default=0, help="exit when this process exits")
     args = ap.parse_args()
 
+    use_system_certificates()
     State.token = os.environ.get("MAGNI_TTS_TOKEN", "")
     State.voice_dirs = args.voices
 

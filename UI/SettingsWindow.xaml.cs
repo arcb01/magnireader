@@ -519,7 +519,7 @@ public partial class SettingsWindow : Window
         ReloadGpuVoices(s.GpuVoiceEnglish, s.GpuVoiceSpanish);
 
         // nvidia-smi takes a moment: check off the UI thread
-        _ = Task.Run(() => GpuVoiceSpeaker.DetectGpu(refresh: true)).ContinueWith(t =>
+        _ = Task.Run(() => { GpuVoicePack.Refresh(); return GpuVoiceSpeaker.DetectGpu(refresh: true); }).ContinueWith(t =>
             Dispatcher.BeginInvoke(() =>
             {
                 _gpuStatus = t.IsCompletedSuccessfully ? t.Result : new GpuStatus(null, 0, null, "Could not check the GPU.");
@@ -579,9 +579,17 @@ public partial class SettingsWindow : Window
         }
         else if (engine != null && installed)
         {
+            var by = GpuVoiceSpeaker.IsFromPack(engine.Id) ? " by your organization" : "";
             GpuStatusText.Text = GpuVoiceSpeaker.Shared.IsReady(engine.Id)
-                ? $"✓ {engine.DisplayName} is installed and loaded on the GPU."
-                : $"✓ {engine.DisplayName} is installed. It loads on the GPU (10–30 s) after you save.";
+                ? $"✓ {engine.DisplayName} is installed{by} and loaded on the GPU."
+                : $"✓ {engine.DisplayName} is installed{by}. It loads on the GPU (10–30 s) after you save.";
+            if (GpuVoiceSpeaker.IsFromPack(engine.Id) && GpuVoiceSpeaker.IsPackOutdated(engine.Id))
+                GpuStatusText.Text += " ⚠ The GPU voice pack was built for another MagniReader version; ask IT to rebuild it if the voice fails to load.";
+            GpuInstallBtn.Visibility = Visibility.Collapsed;
+        }
+        else if (engine != null && GpuVoicePack.DownloadDisabledByPolicy)
+        {
+            GpuStatusText.Text = $"Your organization installs the GPU voices. Ask IT for the MagniReader GPU voice pack with {engine.DisplayName}.";
             GpuInstallBtn.Visibility = Visibility.Collapsed;
         }
         else if (engine != null)
