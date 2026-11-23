@@ -60,7 +60,7 @@ The MSI also contains a small installer helper DLL from Velopack that runs only 
 
 ## GPU voices
 
-The optional GPU voices (Settings → Speech → GPU voices) download Python, PyTorch and uv into `%LOCALAPPDATA%\MagniReader\gpu-tts` and run them from there. Those are third-party programs that MagniReader can't sign, and they live in a user-writable folder, so strict AppLocker or WDAC policies will block them. On managed PCs, use the Kokoro or Windows voices, which need nothing outside Program Files, or allow that folder explicitly.
+The optional GPU voices (Settings → Speech → GPU voices) download Python, PyTorch and uv into `%LOCALAPPDATA%\MagniReader\gpu-tts` and run them from there. Those are third-party programs that MagniReader can't sign, and they live in a user-writable folder, so strict AppLocker or WDAC policies will block them. For managed PCs there's an offline **GPU voice pack** that IT builds once and installs under Program Files. Nothing is downloaded or run from user folders. See [gpu-voices-it.md](gpu-voices-it.md), which also has the firewall/proxy allowlist if you'd rather allow the per-user install.
 
 ## What gets signed
 

@@ -74,15 +74,31 @@ public sealed class GpuVoiceSpeaker : IDisposable
 
     private static string UvPath => Path.Combine(RuntimeDirectory, "uv", "uv.exe");
     private static string EnvDirectory(GpuEngineInfo e) => Path.Combine(RuntimeDirectory, "envs", e.EnvName);
-    private static string PythonPath(GpuEngineInfo e) => Path.Combine(EnvDirectory(e), "Scripts", "python.exe");
+    private static string UserPythonPath(GpuEngineInfo e) => Path.Combine(EnvDirectory(e), "Scripts", "python.exe");
+
+    /// <summary>The IT-deployed pack's Python when the pack has this model, else the user's own install.</summary>
+    private static string PythonPath(GpuEngineInfo e) => GpuVoicePack.Find(e.Id)?.PythonPath ?? UserPythonPath(e);
     private static string InstalledMarker(GpuEngineInfo e) => Path.Combine(RuntimeDirectory, $"installed-{e.Id}.txt");
 
     public static GpuEngineInfo? FindEngine(string? id) =>
         Engines.FirstOrDefault(e => string.Equals(e.Id, id, StringComparison.OrdinalIgnoreCase));
 
-    /// <summary>True once the environment was set up and the model loaded and spoke on this PC.</summary>
+    /// <summary>
+    /// True when the IT-deployed GPU voice pack has the model, or once the user's own
+    /// install set up the environment and the model loaded and spoke on this PC.
+    /// </summary>
     public static bool IsInstalled(string? engineId) =>
-        FindEngine(engineId) is { } e && File.Exists(InstalledMarker(e)) && File.Exists(PythonPath(e));
+        FindEngine(engineId) is { } e &&
+        (IsFromPack(e.Id) || (File.Exists(InstalledMarker(e)) && File.Exists(UserPythonPath(e))));
+
+    /// <summary>True when the model comes from the offline pack IT deployed (nothing to download).</summary>
+    public static bool IsFromPack(string? engineId) =>
+        !string.IsNullOrEmpty(engineId) && GpuVoicePack.Find(engineId) != null;
+
+    /// <summary>True when the pack was built for another MagniReader version's packages.</summary>
+    public static bool IsPackOutdated(string engineId) =>
+        FindEngine(engineId) is { } e &&
+        GpuVoicePack.IsOutdated(e.Id, Path.Combine(BundledDirectory, "requirements", e.EnvName + ".txt"));
 
     // ─── GPU detection ──────────────────────────────────────────
 
@@ -220,6 +236,8 @@ public sealed class GpuVoiceSpeaker : IDisposable
     public async Task InstallAsync(string engineId, IProgress<string> progress, CancellationToken token)
     {
         var engine = FindEngine(engineId) ?? throw new ArgumentException($"Unknown GPU engine '{engineId}'");
+        if (GpuVoicePack.DownloadDisabledByPolicy)
+            throw new InvalidOperationException("Your organization installs the GPU voices for you. Ask IT for the MagniReader GPU voice pack.");
         var gpu = DetectGpu(refresh: true);
         if (!gpu.CanRun) throw new InvalidOperationException(gpu.Problem);
 
@@ -235,7 +253,7 @@ public sealed class GpuVoiceSpeaker : IDisposable
         }
 
         // 2. Python 3.11 + virtual environment
-        if (!File.Exists(PythonPath(engine)))
+        if (!File.Exists(UserPythonPath(engine)))
         {
             progress.Report("Setting up Python…");
             await RunToolAsync(UvPath, $"venv --python 3.11 --python-preference only-managed --seed \"{EnvDirectory(engine)}\"",
@@ -245,7 +263,7 @@ public sealed class GpuVoiceSpeaker : IDisposable
         // 3. PyTorch (CUDA) + the model's packages
         progress.Report("Downloading PyTorch and the model's packages (several GB, this takes a while)…");
         await RunToolAsync(UvPath,
-            $"pip install --python \"{PythonPath(engine)}\" -r \"{requirements}\" " +
+            $"pip install --python \"{UserPythonPath(engine)}\" -r \"{requirements}\" " +
             "--index-strategy unsafe-best-match",
             progress, token);
 
@@ -256,7 +274,7 @@ public sealed class GpuVoiceSpeaker : IDisposable
         {
             StopCore();
             _serverEngine = engine;
-            start = _startTask = StartServerAsync(engine, progress, token);
+            start = _startTask = StartServerAsync(engine, progress, token, allowDownloads: true);
         }
         bool ok = await start;
         if (!ok) throw new InvalidOperationException(_lastError ?? "The model could not start. See the log in %LOCALAPPDATA%\\MagniReader\\gpu-tts\\logs.");
@@ -282,6 +300,11 @@ public sealed class GpuVoiceSpeaker : IDisposable
     /// <summary>Common environment for uv and the server: everything stays inside RuntimeDirectory.</summary>
     private static void SetEnvironment(ProcessStartInfo psi)
     {
+        // Company networks: the system proxy and the Windows certificate store (for
+        // proxies that inspect TLS). uv ignores both unless told.
+        GpuVoicePack.ApplySystemProxy(psi);
+        psi.Environment["UV_SYSTEM_CERTS"] = "1";
+        psi.Environment["HF_HUB_DISABLE_TELEMETRY"] = "1";
         psi.Environment["UV_CACHE_DIR"] = Path.Combine(RuntimeDirectory, "uv-cache");
         psi.Environment["UV_PYTHON_INSTALL_DIR"] = Path.Combine(RuntimeDirectory, "python");
         psi.Environment["UV_LINK_MODE"] = "copy";
@@ -308,7 +331,10 @@ public sealed class GpuVoiceSpeaker : IDisposable
         };
         SetEnvironment(psi);
         Log($"[GPU] Running: {Path.GetFileName(exe)} {args}");
-        using var p = Process.Start(psi) ?? throw new InvalidOperationException($"Could not start {exe}");
+        Process? started;
+        try { started = Process.Start(psi); }
+        catch (Exception ex) { throw GpuVoicePack.ExplainStartFailure(exe, ex); }
+        using var p = started ?? throw new InvalidOperationException($"Could not start {exe}");
         var tail = new Queue<string>();
         void OnLine(string? line)
         {
@@ -330,6 +356,11 @@ public sealed class GpuVoiceSpeaker : IDisposable
         {
             string last;
             lock (tail) last = string.Join(" | ", tail);
+            // uv reports a Python it wasn't allowed to start as "os error 5" (AppLocker/SRP),
+            // 1260 (policy) or 4551 (WDAC)
+            if (last.Contains("os error 5)") || last.Contains("os error 1260") || last.Contains("os error 4551"))
+                throw GpuVoicePack.ExplainStartFailure(PythonPath(FindEngine(DefaultEngine)!),
+                    new System.ComponentModel.Win32Exception(1260, last));
             throw new InvalidOperationException($"{Path.GetFileName(exe)} failed (exit {p.ExitCode}): {last}");
         }
     }
@@ -375,7 +406,12 @@ public sealed class GpuVoiceSpeaker : IDisposable
         }
     }
 
-    private async Task<bool> StartServerAsync(GpuEngineInfo engine, IProgress<string>? progress, CancellationToken token)
+    /// <param name="allowDownloads">
+    /// Only the install may download the model. Later starts run offline, so a firewall
+    /// that blocks Hugging Face doesn't slow the start-up or break it.
+    /// </param>
+    private async Task<bool> StartServerAsync(GpuEngineInfo engine, IProgress<string>? progress, CancellationToken token,
+        bool allowDownloads = false)
     {
         var sw = Stopwatch.StartNew();
         _lastError = null;
@@ -400,9 +436,23 @@ public sealed class GpuVoiceSpeaker : IDisposable
             psi.ArgumentList.Add(a);
         SetEnvironment(psi);
         psi.Environment["MAGNI_TTS_TOKEN"] = token16;
+        if (GpuVoicePack.Find(engine.Id) is { } pack)
+        {
+            // Read-only pack in Program Files: local model, aligner weights, no network.
+            psi.Environment["MAGNI_MODEL_PATH"] = pack.ModelPath;
+            if (GpuVoicePack.TorchHome is { } torchHome) psi.Environment["TORCH_HOME"] = torchHome;
+            allowDownloads = false;
+        }
+        if (!allowDownloads)
+        {
+            psi.Environment["HF_HUB_OFFLINE"] = "1";
+            psi.Environment["TRANSFORMERS_OFFLINE"] = "1";
+        }
 
-        Log($"[GPU] Starting {engine.Id} server");
-        var p = Process.Start(psi);
+        Log($"[GPU] Starting {engine.Id} server ({(GpuVoicePack.Find(engine.Id) != null ? "IT pack" : "user install")}, {psi.FileName})");
+        Process? p;
+        try { p = Process.Start(psi); }
+        catch (Exception ex) { _lastError = GpuVoicePack.ExplainStartFailure(psi.FileName, ex).Message; Log("[GPU] " + _lastError); return false; }
         if (p == null) { _lastError = "Could not start Python."; return false; }
         lock (_serverLock) { _server = p; _serverEngine = engine; _token = token16; _ready = null; }
 
