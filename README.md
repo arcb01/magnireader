@@ -40,6 +40,8 @@ It is plain C# / .NET 8 / WPF: no Electron, no Python, and no cloud service need
 
 MagniReader keeps itself up to date. New releases download in the background and install the next time it starts, or right away with **Restart to update** in the tray menu. Your settings and the Kokoro model in `%APPDATA%\MagniReader` are kept across updates. Uninstall from Windows **Settings → Apps**.
 
+**For IT departments:** each release also has **`MagniReader-win.msi`**, a per-machine install to Program Files that deploys silently through Intune, Group Policy or SCCM (`msiexec /i MagniReader-win.msi /qn`). See [docs/enterprise.md](docs/enterprise.md) for deployment, update policy, AppLocker/WDAC and the list of signed files.
+
 > [!NOTE]
 > The installer isn't code-signed yet, so Windows SmartScreen may warn about an unrecognized app. Click **More info → Run anyway**.
 
@@ -238,7 +240,7 @@ git tag v1.0.0
 git push origin v1.0.0
 ```
 
-The workflow publishes a self-contained build, packs `MagniReader-win-Setup.exe`, a portable zip and full + delta update packages, and attaches them to a new GitHub Release. Installed copies pick it up within a few hours. You can also run the workflow by hand from the **Actions** tab.
+The workflow publishes a self-contained build, packs `MagniReader-win-Setup.exe`, the per-machine `MagniReader-win.msi`, a portable zip and full + delta update packages, and attaches them to a new GitHub Release. Installed copies pick it up within a few hours. You can also run the workflow by hand from the **Actions** tab.
 
 ### Project structure
 

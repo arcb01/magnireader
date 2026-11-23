@@ -695,6 +695,13 @@ public partial class SettingsWindow : Window
             CheckUpdatesBtn.IsEnabled = false;
             UpdateStatusText.Text = "Updates are only available in the installed version (MagniReader-win-Setup.exe from the GitHub releases page).";
         }
+        else if (_updateService.UpdatesManagedByAdmin)
+        {
+            // Leave the user's choice as saved; it applies again if the policy is lifted.
+            AutoUpdateCheckBox.IsEnabled = false;
+            CheckUpdatesBtn.IsEnabled = false;
+            UpdateStatusText.Text = "Updates are managed by your organization. Ask your IT department for newer versions.";
+        }
         else if (_updateService.PendingVersion is string pending)
         {
             ShowUpdateReady(pending);
@@ -739,6 +746,7 @@ public partial class SettingsWindow : Window
             UpdateService.CheckResult.UpToDate => $"✓ You have the latest version ({_updateService.CurrentVersion}).",
             UpdateService.CheckResult.Failed => "⚠ Couldn't reach GitHub. Check your connection and try again.",
             UpdateService.CheckResult.NotInstalled => "Updates are only available in the installed version.",
+            UpdateService.CheckResult.Managed => "Updates are managed by your organization.",
             _ => UpdateStatusText.Text,
         };
         if (result == UpdateService.CheckResult.UpdateReady && _updateService.PendingVersion is string v)
